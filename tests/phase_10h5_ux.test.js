@@ -191,14 +191,17 @@ describe('PHASE 10H.5 — Simplify Creator Discord Server UX Tests', () => {
     provisioner = new ServerProvisioner({
       discord: { guildId: 'dev_guild_12345' },
       isDevelopment: true,
-      admin: { adminUserIds: ['admin_user_1'] }
+      admin: {
+        adminRoleIds: ['admin_role_1'],
+        adminFromDiscordAdministrator: true
+      }
     });
     adminActor = {
       id: 'admin_user_1',
       user: { id: 'admin_user_1' },
       member: {
         id: 'admin_user_1',
-        roles: { cache: new Collection() },
+        roles: { cache: new Collection([['admin_role_1', { id: 'admin_role_1', name: 'Admin' }]]) },
         permissions: new PermissionsBitField(PermissionFlagsBits.Administrator)
       }
     };
