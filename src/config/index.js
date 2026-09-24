@@ -55,7 +55,8 @@ const configSchema = z.object({
   DISCORD_CAMPAIGN_MANAGER_ROLE_IDS: z.preprocess(
     (val) => (typeof val === 'string' ? val.split(',').map((s) => s.trim()).filter(Boolean) : val || []),
     z.array(z.string()).default([])
-  )
+  ),
+  ADMIN_FROM_DISCORD_ADMINISTRATOR: z.preprocess((val) => val === 'true' || val === true, z.boolean()).default(false)
 });
 
 /**
@@ -137,7 +138,8 @@ function loadConfig() {
     },
     admin: {
       adminRoleIds: config.DISCORD_ADMIN_ROLE_IDS,
-      campaignManagerRoleIds: config.DISCORD_CAMPAIGN_MANAGER_ROLE_IDS
+      campaignManagerRoleIds: config.DISCORD_CAMPAIGN_MANAGER_ROLE_IDS,
+      adminFromDiscordAdministrator: config.ADMIN_FROM_DISCORD_ADMINISTRATOR
     }
   };
 }

@@ -105,8 +105,8 @@ export function resolveAdminRoles(interaction, customConfig = config?.admin) {
   const adminRoleIds = customConfig?.adminRoleIds || [];
   const campaignManagerRoleIds = customConfig?.campaignManagerRoleIds || [];
 
-  // 1. Guild Administrator permission grant full ADMIN
-  if (member.permissions) {
+  // 1. Optional: Guild Administrator permission grants full ADMIN if explicitly enabled
+  if (customConfig?.adminFromDiscordAdministrator && member.permissions) {
     try {
       if (typeof member.permissions.has === 'function') {
         if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
@@ -142,17 +142,6 @@ export function resolveAdminRoles(interaction, customConfig = config?.admin) {
   for (const cmRoleId of campaignManagerRoleIds) {
     if (memberRoleIds.has(cmRoleId)) {
       roles.add(AdminRole.CAMPAIGN_MANAGER);
-    }
-  }
-
-  // 3. Fallback: match by canonical role names if present on member
-  if (member.roles?.cache && typeof member.roles.cache.values === 'function') {
-    for (const r of member.roles.cache.values()) {
-      if (r.name === 'Peak Admin') {
-        roles.add(AdminRole.ADMIN);
-      } else if (r.name === 'Campaign Manager') {
-        roles.add(AdminRole.CAMPAIGN_MANAGER);
-      }
     }
   }
 

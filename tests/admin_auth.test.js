@@ -19,7 +19,7 @@ describe('Admin Authorization & Role Resolution', () => {
     campaignManagerRoleIds: ['role_cm_456']
   };
 
-  test('resolves ADMIN role for user with Guild Administrator permission', () => {
+  test('resolves ADMIN role for user with Guild Administrator permission only when adminFromDiscordAdministrator is true', () => {
     const interaction = {
       member: {
         permissions: PermissionsBitField.Flags.Administrator,
@@ -27,8 +27,13 @@ describe('Admin Authorization & Role Resolution', () => {
       }
     };
 
-    const roles = resolveAdminRoles(interaction, customConfig);
-    assert.deepEqual(roles, [AdminRole.ADMIN]);
+    // Disabled by default
+    const rolesDisabled = resolveAdminRoles(interaction, { ...customConfig, adminFromDiscordAdministrator: false });
+    assert.deepEqual(rolesDisabled, []);
+
+    // Enabled explicitly
+    const rolesEnabled = resolveAdminRoles(interaction, { ...customConfig, adminFromDiscordAdministrator: true });
+    assert.deepEqual(rolesEnabled, [AdminRole.ADMIN]);
   });
 
   test('resolves ADMIN role for user holding configured admin role snowflake', () => {
@@ -53,6 +58,23 @@ describe('Admin Authorization & Role Resolution', () => {
 
     const roles = resolveAdminRoles(interaction, customConfig);
     assert.deepEqual(roles, [AdminRole.CAMPAIGN_MANAGER]);
+  });
+
+  test('resolves empty roles for user with Peak Admin or Campaign Manager role names if IDs do not match', () => {
+    const interaction = {
+      member: {
+        permissions: 0n,
+        roles: {
+          cache: [
+            { id: 'random_id_1', name: 'Peak Admin' },
+            { id: 'random_id_2', name: 'Campaign Manager' }
+          ]
+        }
+      }
+    };
+
+    const roles = resolveAdminRoles(interaction, customConfig);
+    assert.deepEqual(roles, []);
   });
 
   test('resolves empty roles for creator without staff permissions', () => {
