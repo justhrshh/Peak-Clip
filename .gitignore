@@ -16,8 +16,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Prisma generated engine artifacts
-prisma/migrations/
+# Backups and database dumps
+backups/
+
 # Redis dump & temp files
 dump.rdb
 scratch/
