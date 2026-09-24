@@ -3,8 +3,11 @@ import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from 'discord.js
 import { Prisma } from '@prisma/client';
 import {
   assertAdminPermission,
-  AdminPermission
+  AdminPermission,
+  AdminRole
 } from '../../modules/admin/admin.auth.js';
+import { UnauthorizedAdminActionError } from '../../modules/admin/admin.errors.js';
+import { panelService } from '../panels/panel.service.js';
 import { adminCampaignService } from '../../modules/admin/admin.campaign.service.js';
 import { adminSubmissionService } from '../../modules/admin/admin.submission.service.js';
 import { adminCreatorService } from '../../modules/admin/admin.creator.service.js';
@@ -420,6 +423,17 @@ export const data = new SlashCommandBuilder()
           .addIntegerOption((opt) => opt.setName('page').setDescription('Page number').setMinValue(1))
       )
   )
+  // ==================== OPERATIONAL PANELS SETUP ====================
+  .addSubcommandGroup((group) =>
+    group
+      .setName('setup')
+      .setDescription('Deploy and configure operational panels without server provisioning')
+      .addSubcommand((sub) =>
+        sub
+          .setName('panels')
+          .setDescription('Deploy or update canonical operational panels in configured channels')
+      )
+  )
   // ==================== CHANNEL RESET SUBCOMMAND ====================
   .addSubcommand((sub) =>
     sub
@@ -440,7 +454,57 @@ export async function execute(interaction) {
   };
 
   try {
-    // 0. CHANNEL RESET
+    // 0A. OPERATIONAL PANELS SETUP (ZERO PROVISIONING)
+    if (group === 'setup' && subcommand === 'panels') {
+      const roles = assertAdminPermission(interaction, AdminPermission.CAMPAIGN_EDIT);
+      if (!roles.includes(AdminRole.ADMIN)) {
+        throw new UnauthorizedAdminActionError('Panel setup requires full Admin role authority.');
+      }
+      await interaction.deferReply({ ephemeral: true });
+
+      const results = await panelService.deployAllPanels(interaction.client, interaction.guild);
+
+      const lines = ['🛡️ **Operational Panels Setup Complete**\n'];
+
+      if (results.created.length > 0) {
+        lines.push(`**✅ Created (${results.created.length}):**`);
+        for (const item of results.created) {
+          lines.push(`• **${item.name}** in <#${item.channelId}> (\`${item.messageId}\`)`);
+        }
+        lines.push('');
+      }
+
+      if (results.updated.length > 0) {
+        lines.push(`**🔄 Updated (${results.updated.length}):**`);
+        for (const item of results.updated) {
+          lines.push(`• **${item.name}** in <#${item.channelId}> (\`${item.messageId}\`)`);
+        }
+        lines.push('');
+      }
+
+      if (results.skipped.length > 0) {
+        lines.push(`**⚠️ Skipped (${results.skipped.length}):**`);
+        for (const item of results.skipped) {
+          lines.push(`• **${item.name}** (\`${item.envVar}\`): ${item.reason}`);
+        }
+        lines.push('');
+      }
+
+      if (results.failed.length > 0) {
+        lines.push(`**❌ Failed (${results.failed.length}):**`);
+        for (const item of results.failed) {
+          lines.push(`• **${item.name}**: ${item.reason}`);
+        }
+        lines.push('');
+      }
+
+      await interaction.editReply({
+        content: lines.join('\n').trim()
+      });
+      return;
+    }
+
+    // 0B. CHANNEL RESET
     if (!group && subcommand === 'reset-channel') {
       assertAdminPermission(interaction, AdminPermission.SUBMISSION_VIEW);
       await interaction.deferReply({ ephemeral: true });

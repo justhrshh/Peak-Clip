@@ -104,6 +104,8 @@ function loadConfig() {
     if (!config.DATABASE_URL) missing.push('DATABASE_URL');
     if (!config.DISCORD_TOKEN) missing.push('DISCORD_TOKEN');
     if (!config.DISCORD_CLIENT_ID) missing.push('DISCORD_CLIENT_ID');
+    if (!config.DISCORD_CHANNEL_REVIEW_QUEUE_ID) missing.push('DISCORD_CHANNEL_REVIEW_QUEUE_ID');
+    if (!config.DISCORD_CHANNEL_BOT_ERRORS_ID) missing.push('DISCORD_CHANNEL_BOT_ERRORS_ID');
 
     if (missing.length > 0) {
       const msg = `Missing required production environment variables: ${missing.join(', ')}`;
