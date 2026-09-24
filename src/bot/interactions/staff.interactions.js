@@ -570,25 +570,37 @@ export async function handleStaffCampaignCreateModalSubmit(interaction) {
     if (rawBudget) totalBudget = parseFloat(rawBudget) || 1000.0;
   }
 
-  // Parse allowed platforms (supports StringSelectMenu checkboxes OR fallback text input)
+  // Parse allowed platforms (supports TextInput or legacy StringSelectMenu fallback)
   const VALID_PLATFORMS = ['youtube', 'tiktok', 'instagram', 'facebook'];
+  const PLATFORM_ALIASES = {
+    yt: 'youtube',
+    youtube: 'youtube',
+    tt: 'tiktok',
+    tiktok: 'tiktok',
+    ig: 'instagram',
+    insta: 'instagram',
+    instagram: 'instagram',
+    fb: 'facebook',
+    facebook: 'facebook'
+  };
   let allowedPlatforms = [];
 
-  // 1. Try reading from StringSelectMenu component
+  // 1. Try reading from StringSelectMenu component (legacy fallback)
   try {
     if (typeof interaction.fields.getStringSelectValues === 'function') {
       const selected = interaction.fields.getStringSelectValues('platforms');
       if (Array.isArray(selected) && selected.length > 0) {
         allowedPlatforms = selected
           .map((p) => String(p).trim().toLowerCase())
+          .map((p) => PLATFORM_ALIASES[p] || p)
           .filter((p) => VALID_PLATFORMS.includes(p));
       }
     }
   } catch {
-    // If not a StringSelectMenu component, fall through to text input fallback
+    // If not a StringSelectMenu component, fall through to text input
   }
 
-  // 2. Fallback to TextInput component if provided as text
+  // 2. Read from TextInput component
   if (allowedPlatforms.length === 0) {
     try {
       const platformsRaw = interaction.fields.getTextInputValue('platforms')?.trim();
@@ -597,8 +609,9 @@ export async function handleStaffCampaignCreateModalSubmit(interaction) {
           allowedPlatforms = [...VALID_PLATFORMS];
         } else {
           allowedPlatforms = platformsRaw
-            .split(',')
+            .split(/[,/;\s]+/)
             .map((p) => p.trim().toLowerCase())
+            .map((p) => PLATFORM_ALIASES[p] || p)
             .filter((p) => VALID_PLATFORMS.includes(p));
         }
       }
@@ -607,7 +620,7 @@ export async function handleStaffCampaignCreateModalSubmit(interaction) {
     }
   }
 
-  // Default to all 4 supported platforms if nothing specified
+  // Default to all 4 supported platforms if nothing specified or valid
   if (allowedPlatforms.length === 0) {
     allowedPlatforms = [...VALID_PLATFORMS];
   }

@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { PermissionsBitField, MessageFlags } from 'discord.js';
+import { PermissionsBitField, MessageFlags, ComponentType } from 'discord.js';
 import { STAFF_COMPONENTS, staffIds } from '../src/bot/components/staffComponentIds.js';
 import { buildCampaignCreateModal } from '../src/bot/components/staff.modals.js';
 import {
@@ -9,6 +9,7 @@ import {
 } from '../src/bot/interactions/staff.interactions.js';
 import { handleInteraction } from '../src/bot/interactions/router.js';
 import { adminCampaignService } from '../src/modules/admin/admin.campaign.service.js';
+import { campaignCreateSchema } from '../src/modules/campaigns/campaign.validation.js';
 import { prisma } from '../src/database/client.js';
 
 describe('Campaign Report & Creation Enhancements', () => {
@@ -37,10 +38,27 @@ describe('Campaign Report & Creation Enhancements', () => {
     prisma.earning.aggregate = origEarningAggregate;
   });
 
-  test('1. buildCampaignCreateModal includes CPM/Budget, Platforms select menu with 4 options, and Description fields', () => {
+  test('1. buildCampaignCreateModal contains strictly type-4 components across all action rows (Discord modal limits)', () => {
     const modal = buildCampaignCreateModal();
     assert.equal(modal.data.custom_id, STAFF_COMPONENTS.CMP_CREATE_MODAL);
     assert.equal(modal.components.length, 5, 'Modal must have exactly 5 action rows (Discord max)');
+
+    // Verify every action row contains only 1 component, and every component is strictly type 4 (TextInput)
+    for (let i = 0; i < modal.components.length; i++) {
+      const row = modal.components[i];
+      assert.equal(row.components.length, 1, `Action row ${i} must contain exactly 1 component`);
+      const component = row.components[0];
+      assert.equal(
+        component.data.type,
+        4,
+        `Action row ${i} component must be TextInput (type 4, got ${component.data.type})`
+      );
+      assert.equal(
+        component.data.type,
+        ComponentType.TextInput,
+        `Action row ${i} component must match ComponentType.TextInput`
+      );
+    }
 
     const customIds = modal.components.map((row) => row.components[0].data.custom_id);
     assert.ok(customIds.includes('name'), 'Must include name field');
@@ -50,15 +68,12 @@ describe('Campaign Report & Creation Enhancements', () => {
     assert.ok(customIds.includes('description'), 'Must include description field');
 
     const platformComponent = modal.components[3].components[0];
-    assert.equal(platformComponent.data.type, 3, 'Platforms must be a StringSelectMenu (type 3)');
-    assert.equal(platformComponent.data.min_values, 1);
-    assert.equal(platformComponent.data.max_values, 4);
-    assert.equal(platformComponent.options.length, 4, 'Must support exactly 4 platforms');
-    const optionValues = platformComponent.options.map((o) => o.data.value);
-    assert.deepEqual(optionValues.sort(), ['facebook', 'instagram', 'tiktok', 'youtube'].sort());
+    assert.equal(platformComponent.data.custom_id, 'platforms');
+    assert.equal(platformComponent.data.type, 4, 'Platforms field must be TextInput (type 4)');
+    assert.ok(platformComponent.data.label.toLowerCase().includes('platform'));
   });
 
-  test('2. handleStaffCampaignCreateModalSubmit parses platforms from select menu and text fallback', async () => {
+  test('2. handleStaffCampaignCreateModalSubmit parses platforms from text input and handles aliases/delimiters', async () => {
     let capturedCreatePayload = null;
     adminCampaignService.createCampaign = async (payload, actor) => {
       capturedCreatePayload = payload;
@@ -76,10 +91,6 @@ describe('Campaign Report & Creation Enhancements', () => {
       user: { id: 'staff_admin_1', username: 'Admin' },
       member: { permissions: PermissionsBitField.Flags.Administrator },
       fields: {
-        getStringSelectValues: (field) => {
-          if (field === 'platforms') return ['youtube', 'tiktok'];
-          return [];
-        },
         getTextInputValue: (field) => {
           switch (field) {
             case 'name':
@@ -88,6 +99,8 @@ describe('Campaign Report & Creation Enhancements', () => {
               return 'Streamer Co';
             case 'cpm_budget':
               return '1.50 / 4500';
+            case 'platforms':
+              return 'youtube, tiktok';
             case 'description':
               return 'Produce top 10 moments and funny clips from our stream broadcasts.';
             default:
@@ -115,6 +128,68 @@ describe('Campaign Report & Creation Enhancements', () => {
     );
     assert.ok(replyData?.content?.includes('Gaming Clips Blitz'));
     assert.ok(replyData?.content?.includes('YOUTUBE, TIKTOK'));
+  });
+
+  test('2b. Blank optional dates do not cause "endsAt must be after startsAt" Zod error', () => {
+    const baseCampaign = {
+      name: 'Autumn Clipping Drive',
+      slug: 'autumn-clipping-drive',
+      description: 'Official clipping drive for creators to earn payouts.',
+      clientName: 'Autumn Studios',
+      payRate: 2.0,
+      totalBudget: 5000,
+      requirements: { allowedPlatforms: ['youtube'] }
+    };
+
+    // 1. Both blank strings
+    const parsedBothBlank = campaignCreateSchema.parse({
+      ...baseCampaign,
+      startsAt: '',
+      endsAt: ''
+    });
+    assert.ok(parsedBothBlank.startsAt instanceof Date, 'startsAt must be coerced to Date');
+    assert.ok(parsedBothBlank.endsAt instanceof Date, 'endsAt must be coerced to Date');
+    assert.ok(parsedBothBlank.endsAt > parsedBothBlank.startsAt, 'endsAt must default to after startsAt');
+
+    // 2. Both null
+    const parsedBothNull = campaignCreateSchema.parse({
+      ...baseCampaign,
+      startsAt: null,
+      endsAt: null
+    });
+    assert.ok(parsedBothNull.startsAt instanceof Date);
+    assert.ok(parsedBothNull.endsAt instanceof Date);
+    assert.ok(parsedBothNull.endsAt > parsedBothNull.startsAt);
+
+    // 3. Both undefined
+    const parsedBothUndefined = campaignCreateSchema.parse({
+      ...baseCampaign
+    });
+    assert.ok(parsedBothUndefined.startsAt instanceof Date);
+    assert.ok(parsedBothUndefined.endsAt instanceof Date);
+    assert.ok(parsedBothUndefined.endsAt > parsedBothUndefined.startsAt);
+
+    // 4. startsAt specified, endsAt blank
+    const specifiedStart = new Date('2026-11-01T00:00:00.000Z');
+    const parsedStartOnly = campaignCreateSchema.parse({
+      ...baseCampaign,
+      startsAt: specifiedStart,
+      endsAt: ''
+    });
+    assert.equal(parsedStartOnly.startsAt.getTime(), specifiedStart.getTime());
+    assert.ok(parsedStartOnly.endsAt > parsedStartOnly.startsAt);
+
+    // 5. Inverted dates still correctly rejected
+    assert.throws(
+      () => {
+        campaignCreateSchema.parse({
+          ...baseCampaign,
+          startsAt: '2026-12-01',
+          endsAt: '2026-11-01'
+        });
+      },
+      /Campaign endsAt must be chronologically after startsAt/
+    );
   });
 
   test('3. handleStaffCampaignReport renders live clippers, clips, and live consumed calculation', async () => {

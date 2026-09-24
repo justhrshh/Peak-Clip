@@ -116,8 +116,8 @@ export const data = new SlashCommandBuilder()
           .addStringOption((opt) => opt.setName('description').setDescription('Campaign description').setRequired(true))
           .addNumberOption((opt) => opt.setName('cpm').setDescription('Pay rate per 1,000 views (CPM) in USD').setRequired(true).setMinValue(0.01))
           .addNumberOption((opt) => opt.setName('total_budget').setDescription('Total campaign budget in USD').setRequired(true).setMinValue(1))
-          .addStringOption((opt) => opt.setName('starts_at').setDescription('Campaign start date (YYYY-MM-DD)').setRequired(true))
-          .addStringOption((opt) => opt.setName('ends_at').setDescription('Campaign end date (YYYY-MM-DD)').setRequired(true))
+          .addStringOption((opt) => opt.setName('starts_at').setDescription('Campaign start date (YYYY-MM-DD, default: today)').setRequired(false))
+          .addStringOption((opt) => opt.setName('ends_at').setDescription('Campaign end date (YYYY-MM-DD, default: +30 days)').setRequired(false))
           .addNumberOption((opt) => opt.setName('creator_cap').setDescription('Max earnings per creator per campaign (default: $600)').setMinValue(1))
           .addIntegerOption((opt) => opt.setName('min_clip_duration').setDescription('Minimum clip length in seconds (default: 7)').setMinValue(1))
           .addIntegerOption((opt) => opt.setName('max_clip_duration').setDescription('Maximum clip length in seconds (default: 120)').setMinValue(1))
@@ -649,8 +649,8 @@ export async function execute(interaction) {
             maxClipDurationSeconds: maxClip,
             retentionRequired,
             retentionDays,
-            startsAt: new Date(startsAt),
-            endsAt: new Date(endsAt),
+            startsAt: startsAt ? new Date(startsAt) : undefined,
+            endsAt: endsAt ? new Date(endsAt) : undefined,
             requirements: { allowedPlatforms }
           },
           actor

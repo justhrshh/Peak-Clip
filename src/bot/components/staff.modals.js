@@ -2,8 +2,6 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
   ActionRowBuilder
 } from 'discord.js';
 import { STAFF_COMPONENTS } from './staffComponentIds.js';
@@ -144,37 +142,14 @@ export function buildCampaignCreateModal() {
     .setRequired(true)
     .setMaxLength(100);
 
-  const platformSelect = new StringSelectMenuBuilder()
+  const platformsInput = new TextInputBuilder()
     .setCustomId('platforms')
-    .setPlaceholder('Select allowed platforms (YouTube, TikTok, Instagram, Facebook)')
-    .setMinValues(1)
-    .setMaxValues(4)
-    .addOptions([
-      new StringSelectMenuOptionBuilder()
-        .setLabel('YouTube')
-        .setValue('youtube')
-        .setDescription('YouTube Shorts & Videos')
-        .setEmoji('▶️')
-        .setDefault(true),
-      new StringSelectMenuOptionBuilder()
-        .setLabel('TikTok')
-        .setValue('tiktok')
-        .setDescription('TikTok Video Clips')
-        .setEmoji('🎵')
-        .setDefault(true),
-      new StringSelectMenuOptionBuilder()
-        .setLabel('Instagram')
-        .setValue('instagram')
-        .setDescription('Instagram Reels')
-        .setEmoji('📸')
-        .setDefault(true),
-      new StringSelectMenuOptionBuilder()
-        .setLabel('Facebook')
-        .setValue('facebook')
-        .setDescription('Facebook Reels & Videos')
-        .setEmoji('📘')
-        .setDefault(true)
-    ]);
+    .setLabel('Platforms (youtube, tiktok, insta, fb)')
+    .setPlaceholder('youtube, tiktok, instagram, facebook (or ALL)')
+    .setStyle(TextInputStyle.Short)
+    .setValue('youtube, tiktok, instagram, facebook')
+    .setRequired(false)
+    .setMaxLength(100);
 
   const descInput = new TextInputBuilder()
     .setCustomId('description')
@@ -188,7 +163,7 @@ export function buildCampaignCreateModal() {
     new ActionRowBuilder().addComponents(nameInput),
     new ActionRowBuilder().addComponents(clientInput),
     new ActionRowBuilder().addComponents(ratesInput),
-    new ActionRowBuilder().addComponents(platformSelect),
+    new ActionRowBuilder().addComponents(platformsInput),
     new ActionRowBuilder().addComponents(descInput)
   );
 

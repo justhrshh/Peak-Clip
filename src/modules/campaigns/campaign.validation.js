@@ -66,13 +66,29 @@ export const campaignCreateSchema = z
     retentionRequired: z.boolean().default(false),
     retentionDays: z.coerce.number().int().positive().nullable().optional(),
     // --- Date Window (retained for scheduling) ---
-    startsAt: z.coerce.date(),
-    endsAt: z.coerce.date(),
+    startsAt: z.preprocess((val) => {
+      if (val === '' || val === null || val === undefined) return new Date();
+      return val;
+    }, z.coerce.date().default(() => new Date())),
+    endsAt: z.preprocess((val) => {
+      if (val === '' || val === null || val === undefined) return undefined;
+      return val;
+    }, z.coerce.date().optional()),
     requirements: campaignRequirementsSchema.default({ allowedPlatforms: ['youtube', 'tiktok', 'instagram'] })
   })
-  .refine((data) => data.endsAt > data.startsAt, {
+  .refine((data) => {
+    if (!data.endsAt || !data.startsAt) return true;
+    if (isNaN(data.startsAt.getTime()) || isNaN(data.endsAt.getTime())) return true;
+    return data.endsAt > data.startsAt;
+  }, {
     message: 'Campaign endsAt must be chronologically after startsAt',
     path: ['endsAt']
+  })
+  .transform((data) => {
+    if (!data.endsAt) {
+      data.endsAt = new Date(data.startsAt.getTime() + 30 * 86400000);
+    }
+    return data;
   })
   .refine((data) => data.maxClipDurationSeconds >= data.minClipDurationSeconds, {
     message: 'maxClipDurationSeconds must be >= minClipDurationSeconds',
