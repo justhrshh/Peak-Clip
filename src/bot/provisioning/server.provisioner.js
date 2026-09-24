@@ -78,6 +78,11 @@ export class ServerProvisioner {
       'Discord server provisioning initiated'
     );
 
+    if (this.config?.isProduction || config.isProduction) {
+      logger.warn({ correlationId }, 'Server provisioning is disabled in production to protect client guild structure.');
+      throw new ProvisioningError('Server provisioning is disabled in production. Client Discord server channels and roles must be configured manually via environment variables.');
+    }
+
     try {
       // 1. Target Guild Verification
       this._verifyTargetGuild(guild);

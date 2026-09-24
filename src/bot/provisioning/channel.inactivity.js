@@ -1,11 +1,14 @@
 import { logger } from '../../utils/logger.js';
 import { serverProvisioner } from './server.provisioner.js';
+import { config } from '../../config/index.js';
 
 export const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export class ChannelInactivityManager {
-  constructor(timeoutMs = INACTIVITY_TIMEOUT_MS) {
+  constructor(timeoutMs = INACTIVITY_TIMEOUT_MS, options = {}) {
     this.timeoutMs = timeoutMs;
+    // In client deployments / production, automated resetting of guild channels is disabled
+    this.enabled = options.enabled ?? (timeoutMs !== INACTIVITY_TIMEOUT_MS ? true : Boolean(config?.enableAutoProvisioning));
     this.timers = new Map(); // channelId -> Timeout
   }
 
@@ -14,6 +17,7 @@ export class ChannelInactivityManager {
    * @param {import('discord.js').GuildTextBasedChannel} channel
    */
   touch(channel) {
+    if (!this.enabled) return;
     if (!channel || !channel.id || !channel.guild || typeof channel.send !== 'function') return;
 
     // Only track bot-managed channels

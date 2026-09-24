@@ -51,6 +51,19 @@ export async function execute(interaction, provisionerInstance = serverProvision
 
   // 1. Fast, synchronous in-memory Target Guild check (<0.1ms)
   const activeConfig = provisionerInstance.config || config;
+
+  if (activeConfig.isProduction || config.isProduction) {
+    logger.warn({ correlationId }, '/setup rejected: Provisioning is disabled in production');
+    const disabledEmbed = new EmbedBuilder()
+      .setTitle('❌ Server Provisioning Disabled')
+      .setDescription('Server provisioning is disabled in client production deployments to protect server structure.\nPlease configure your server channels and roles in the `.env` configuration file.')
+      .setColor(0xe74c3c)
+      .setTimestamp();
+
+    await deliverResponse({ embeds: [disabledEmbed] });
+    return;
+  }
+
   const configuredGuildId = activeConfig.discord?.guildId;
   if (configuredGuildId && interaction.guildId && interaction.guildId !== configuredGuildId) {
     logger.warn(

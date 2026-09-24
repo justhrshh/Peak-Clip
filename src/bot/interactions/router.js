@@ -1279,9 +1279,11 @@ export async function handleInteraction(interaction) {
       // Dispatch alert to #bot-errors channel if available in guild
       if (interaction.client) {
         try {
-          const errorsChannel = interaction.client.channels?.cache?.find(
-            (c) => c.name === 'bot-errors' && (!guildId || c.guildId === guildId)
-          );
+          const botErrorsId = config?.discord?.channels?.botErrors;
+          const errorsChannel = (botErrorsId ? interaction.client.channels?.cache?.get(botErrorsId) : null)
+            || interaction.client.channels?.cache?.find(
+              (c) => c.name === 'bot-errors' && (!guildId || c.guildId === guildId)
+            );
           if (errorsChannel && typeof errorsChannel.send === 'function') {
             const errEmbed = new EmbedBuilder()
               .setTitle('🚨 Bot Error Alert')

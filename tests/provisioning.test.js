@@ -175,7 +175,8 @@ describe('Discord Server Provisioning Subsystem (Phase 9A)', () => {
     },
     admin: {
       adminRoleIds: ['admin_role_999'],
-      campaignManagerRoleIds: ['cm_role_888']
+      campaignManagerRoleIds: ['cm_role_888'],
+      adminFromDiscordAdministrator: true
     }
   };
 

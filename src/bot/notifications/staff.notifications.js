@@ -2,13 +2,14 @@ import { getDiscordClient } from '../client.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { staffIds } from '../components/staffComponentIds.js';
 import { logger } from '../../utils/logger.js';
+import { config } from '../../config/index.js';
 
 const STAFF_REVIEW_CHANNEL = 'review-queue';
 const STAFF_PAYOUT_CHANNEL = 'payout-queue';
 const STAFF_AUDIT_CHANNEL = 'audit-log';
 
 /**
- * Helper to find a staff channel across guild cache
+ * Helper to find a staff channel across guild cache or by configured channel ID
  * @param {string} channelName
  * @param {object} [overrideClient=null]
  * @returns {Promise<import('discord.js').TextChannel|null>}
@@ -16,8 +17,31 @@ const STAFF_AUDIT_CHANNEL = 'audit-log';
 async function getStaffChannel(channelName, overrideClient = null) {
   try {
     const client = overrideClient || getDiscordClient();
-    if (!client || !client.guilds) return null;
+    if (!client) return null;
 
+    // 1. Check if configured explicitly by ID via environment variable
+    const configuredChannels = config?.discord?.channels || {};
+    let targetChannelId = null;
+
+    if (channelName === STAFF_REVIEW_CHANNEL) {
+      targetChannelId = configuredChannels.reviewQueue;
+    } else if (channelName === STAFF_PAYOUT_CHANNEL) {
+      targetChannelId = configuredChannels.payoutQueue;
+    } else if (channelName === STAFF_AUDIT_CHANNEL) {
+      targetChannelId = configuredChannels.auditLog;
+    }
+
+    if (targetChannelId) {
+      const channel = client.channels?.cache?.get(targetChannelId)
+        || (client.channels?.fetch ? await client.channels.fetch(targetChannelId).catch(() => null) : null);
+      if (channel && typeof channel.send === 'function') {
+        return channel;
+      }
+    }
+
+    if (!client.guilds) return null;
+
+    // 2. Fallback: find across guild channel cache by name
     for (const guild of client.guilds.cache.values()) {
       const channels = guild.channels?.cache;
       if (!channels) continue;

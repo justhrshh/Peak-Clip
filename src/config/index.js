@@ -56,7 +56,26 @@ const configSchema = z.object({
     (val) => (typeof val === 'string' ? val.split(',').map((s) => s.trim()).filter(Boolean) : val || []),
     z.array(z.string()).default([])
   ),
-  ADMIN_FROM_DISCORD_ADMINISTRATOR: z.preprocess((val) => val === 'true' || val === true, z.boolean()).default(false)
+  ADMIN_FROM_DISCORD_ADMINISTRATOR: z.preprocess((val) => val === 'true' || val === true, z.boolean()).default(false),
+
+  // Channel IDs (Zero Provisioning Client Deployment)
+  DISCORD_CHANNEL_CAMPAIGNS_ID: z.string().optional(),
+  DISCORD_CHANNEL_SUBMISSIONS_ID: z.string().optional(),
+  DISCORD_CHANNEL_REVIEW_QUEUE_ID: z.string().optional(),
+  DISCORD_CHANNEL_PAYOUT_QUEUE_ID: z.string().optional(),
+  DISCORD_CHANNEL_AUDIT_LOG_ID: z.string().optional(),
+  DISCORD_CHANNEL_CREATORS_ID: z.string().optional(),
+  DISCORD_CHANNEL_CAMPAIGN_MANAGEMENT_ID: z.string().optional(),
+  DISCORD_CHANNEL_STAFF_DASHBOARD_ID: z.string().optional(),
+  DISCORD_CHANNEL_CREATOR_DASHBOARD_ID: z.string().optional(),
+  DISCORD_CHANNEL_STATS_ID: z.string().optional(),
+  DISCORD_CHANNEL_EARNINGS_ID: z.string().optional(),
+  DISCORD_CHANNEL_PAYOUTS_ID: z.string().optional(),
+  DISCORD_CHANNEL_BOT_STATUS_ID: z.string().optional(),
+  DISCORD_CHANNEL_BOT_ERRORS_ID: z.string().optional(),
+
+  // Automated guild provisioning flag (strictly false in client production deployments)
+  ENABLE_AUTO_PROVISIONING: z.preprocess((val) => val === 'true' || val === true, z.boolean()).default(false)
 });
 
 /**
@@ -108,8 +127,25 @@ function loadConfig() {
       clientId: config.DISCORD_CLIENT_ID,
       guildId: config.DISCORD_GUILD_ID,
       creatorRoleId: config.DISCORD_CREATOR_ROLE_ID || null,
-      clientVerifiedRoleId: config.CLIENT_VERIFIED_ROLE_ID || null
+      clientVerifiedRoleId: config.CLIENT_VERIFIED_ROLE_ID || null,
+      channels: {
+        campaigns: config.DISCORD_CHANNEL_CAMPAIGNS_ID || null,
+        submissions: config.DISCORD_CHANNEL_SUBMISSIONS_ID || null,
+        reviewQueue: config.DISCORD_CHANNEL_REVIEW_QUEUE_ID || null,
+        payoutQueue: config.DISCORD_CHANNEL_PAYOUT_QUEUE_ID || null,
+        auditLog: config.DISCORD_CHANNEL_AUDIT_LOG_ID || null,
+        creators: config.DISCORD_CHANNEL_CREATORS_ID || null,
+        campaignManagement: config.DISCORD_CHANNEL_CAMPAIGN_MANAGEMENT_ID || null,
+        staffDashboard: config.DISCORD_CHANNEL_STAFF_DASHBOARD_ID || null,
+        creatorDashboard: config.DISCORD_CHANNEL_CREATOR_DASHBOARD_ID || null,
+        stats: config.DISCORD_CHANNEL_STATS_ID || null,
+        earnings: config.DISCORD_CHANNEL_EARNINGS_ID || null,
+        payouts: config.DISCORD_CHANNEL_PAYOUTS_ID || null,
+        botStatus: config.DISCORD_CHANNEL_BOT_STATUS_ID || null,
+        botErrors: config.DISCORD_CHANNEL_BOT_ERRORS_ID || null
+      }
     },
+    enableAutoProvisioning: config.ENABLE_AUTO_PROVISIONING,
     providers: {
       youtubeApiKey: config.YOUTUBE_API_KEY,
       metaAccessToken: config.META_ACCESS_TOKEN,

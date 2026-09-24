@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { MessageFlags, PermissionsBitField, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { config } from '../../config/index.js';
 import { prisma } from '../../database/client.js';
 import { assertAdminPermission, AdminPermission } from '../../modules/admin/admin.auth.js';
 import { adminSubmissionService } from '../../modules/admin/admin.submission.service.js';
@@ -453,19 +454,21 @@ export async function handleStaffChannelReset(interaction) {
   assertAdminPermission(interaction, AdminPermission.SUBMISSION_VIEW);
   await ack(interaction);
 
+  const chId = interaction.channel?.id;
   const chName = interaction.channel?.name;
+  const cfgChannels = config?.discord?.channels || {};
 
-  if (chName === 'creators') {
+  if (chId === cfgChannels.creators || chName === 'creators') {
     await handleStaffCreatorHub(interaction);
-  } else if (chName === 'review-queue') {
+  } else if (chId === cfgChannels.reviewQueue || chName === 'review-queue') {
     await handleStaffReviewQueueHub(interaction);
-  } else if (chName === 'campaign-management') {
+  } else if (chId === cfgChannels.campaignManagement || chName === 'campaign-management') {
     await handleStaffCampaignHub(interaction);
-  } else if (chName === 'payout-queue') {
+  } else if (chId === cfgChannels.payoutQueue || chName === 'payout-queue') {
     await handleStaffPayoutHub(interaction);
-  } else if (chName === 'audit-log') {
+  } else if (chId === cfgChannels.auditLog || chName === 'audit-log') {
     await handleStaffAuditHub(interaction);
-  } else if (chName === 'dashboard') {
+  } else if (chId === cfgChannels.staffDashboard || chName === 'dashboard') {
     const { handleAdminControlCenter } = await import('./dashboard.interactions.js');
     await handleAdminControlCenter(interaction);
   } else {
