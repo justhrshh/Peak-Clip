@@ -19,11 +19,12 @@ function createMockSubRepo() {
   return {
     submissions,
     async createSubmission({ userId, campaignId, platform, url, normalizedUrl, ...rest }) {
-      const key = `${userId}_${campaignId}_${normalizedUrl}`;
-      if (submissions.has(key)) {
-        const error = new Error('Unique constraint failed on the fields: (`user_id`,`campaign_id`,`normalized_url`)');
-        error.code = 'P2002';
-        throw error;
+      for (const s of submissions.values()) {
+        if (s.campaignId === campaignId && s.normalizedUrl === normalizedUrl && s.status !== 'REJECTED') {
+          const error = new Error('Unique constraint failed on partial index (`campaign_id`,`normalized_url`)');
+          error.code = 'P2002';
+          throw error;
+        }
       }
 
       const record = {
@@ -42,7 +43,7 @@ function createMockSubRepo() {
         ...rest
       };
 
-      submissions.set(key, record);
+      submissions.set(record.id, record);
       return { ...record };
     },
     async getSubmissionById(id) {
@@ -51,9 +52,19 @@ function createMockSubRepo() {
       }
       return null;
     },
-    async findDuplicateSubmission(userId, campaignId, normalizedUrl) {
-      const key = `${userId}_${campaignId}_${normalizedUrl}`;
-      return submissions.get(key) || null;
+    async findDuplicateSubmission(campaignIdOrUserId, campaignIdOrNormalizedUrl, normalizedUrlOptional) {
+      let campaignId = campaignIdOrUserId;
+      let normalizedUrl = campaignIdOrNormalizedUrl;
+      if (normalizedUrlOptional !== undefined) {
+        campaignId = campaignIdOrNormalizedUrl;
+        normalizedUrl = normalizedUrlOptional;
+      }
+      for (const s of submissions.values()) {
+        if (s.campaignId === campaignId && s.normalizedUrl === normalizedUrl && s.status !== 'REJECTED') {
+          return { ...s };
+        }
+      }
+      return null;
     },
     async getUserSubmissions(userId, { page = 1, limit = 5, campaignId } = {}) {
       let filtered = Array.from(submissions.values()).filter((s) => s.userId === userId);
@@ -362,6 +373,63 @@ describe('Submission Engine Business Rules', () => {
         }),
       DuplicateSubmissionError
     );
+  });
+
+  test('cross-user duplicate normalized URL in the same campaign is rejected', async () => {
+    const { service, campRepo, userRepo, campaign, user } = setupFixture();
+
+    // User 1 submits
+    await service.createSubmission({
+      userId: user.id,
+      campaignId: campaign.id,
+      rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ'
+    });
+
+    // Create User 2
+    const user2 = { id: 'usr_second_creator', discordId: 'dsc_user_2', status: 'ACTIVE' };
+    userRepo.users.set(user2.id, user2);
+    campRepo.memberships.set(`${user2.id}_${campaign.id}`, {
+      userId: user2.id,
+      campaignId: campaign.id,
+      status: 'ACTIVE'
+    });
+
+    // User 2 attempts to submit the same clip
+    await assert.rejects(
+      async () =>
+        service.createSubmission({
+          userId: user2.id,
+          campaignId: campaign.id,
+          rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share'
+        }),
+      DuplicateSubmissionError
+    );
+  });
+
+  test('earlier REJECTED submission allows resubmission of the same URL', async () => {
+    const { service, subRepo, user, campaign } = setupFixture();
+
+    const firstSub = await service.createSubmission({
+      userId: user.id,
+      campaignId: campaign.id,
+      rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ'
+    });
+
+    // Earlier submission gets REJECTED
+    await subRepo.updateSubmissionStatus(firstSub.id, 'REJECTED', {
+      rejectionReason: 'Format error'
+    });
+
+    // User can now resubmit the clip
+    const resubmitted = await service.createSubmission({
+      userId: user.id,
+      campaignId: campaign.id,
+      rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ'
+    });
+
+    assert.ok(resubmitted.id);
+    assert.notEqual(resubmitted.id, firstSub.id);
+    assert.equal(resubmitted.status, 'PENDING_VERIFICATION');
   });
 
   test('same URL can exist across different campaigns', async () => {

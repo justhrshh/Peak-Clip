@@ -194,8 +194,8 @@ model Submission {
   financialAdjustments FinancialAdjustment[]
   moderationHistory    SubmissionModerationHistory[]
 
-  // Enforce duplicate protection per user, campaign, and normalized URL
-  @@unique([userId, campaignId, normalizedUrl])
+  // Campaign-wide active duplicate index enforced via PostgreSQL partial unique index
+  @@index([campaignId, normalizedUrl])
   @@index([retentionStatus, retentionDeadline])
   @@map("submissions")
 }

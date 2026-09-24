@@ -73,19 +73,30 @@ export class SubmissionRepository {
   }
 
   /**
-   * Check for an existing duplicate submission for the same user, campaign, and normalized URL
-   * @param {string} userId
-   * @param {string} campaignId
-   * @param {string} normalizedUrl
+   * Check for an active duplicate submission in the campaign for this normalized URL
+   * Allows resubmission if an earlier submission was REJECTED.
+   * Supports both (campaignId, normalizedUrl) and legacy (userId, campaignId, normalizedUrl).
+   * @param {string} campaignIdOrUserId
+   * @param {string} campaignIdOrNormalizedUrl
+   * @param {string} [normalizedUrlOptional]
    * @returns {Promise<object|null>}
    */
-  async findDuplicateSubmission(userId, campaignId, normalizedUrl) {
-    return this.db.submission.findUnique({
+  async findDuplicateSubmission(campaignIdOrUserId, campaignIdOrNormalizedUrl, normalizedUrlOptional) {
+    let campaignId = campaignIdOrUserId;
+    let normalizedUrl = campaignIdOrNormalizedUrl;
+
+    if (normalizedUrlOptional !== undefined) {
+      // Called with legacy (userId, campaignId, normalizedUrl) signature
+      campaignId = campaignIdOrNormalizedUrl;
+      normalizedUrl = normalizedUrlOptional;
+    }
+
+    return this.db.submission.findFirst({
       where: {
-        userId_campaignId_normalizedUrl: {
-          userId,
-          campaignId,
-          normalizedUrl
+        campaignId,
+        normalizedUrl,
+        status: {
+          not: 'REJECTED'
         }
       }
     });
