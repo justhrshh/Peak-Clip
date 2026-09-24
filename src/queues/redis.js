@@ -70,7 +70,7 @@ export async function testRedisConnection() {
   try {
     await probeClient.connect();
     const pong = await probeClient.ping();
-    logger.info({ pong }, 'Redis connection successfully established.');
+    logger.debug({ pong }, 'Redis connection successfully established.');
     await probeClient.quit();
     return true;
   } catch (error) {

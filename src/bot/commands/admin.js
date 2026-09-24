@@ -1383,7 +1383,19 @@ export async function execute(interaction) {
     }
   } catch (error) {
     logger.error({ err: error, group, subcommand, actorDiscordId: interaction.user.id }, 'Error executing admin command');
-    const { userMessage } = formatError(error);
+    let userMessage;
+    if (error.name === 'ZodError' || Array.isArray(error.issues)) {
+      const issues = error.issues || [];
+      const details = issues.length > 0
+        ? issues.map((issue) => {
+            const field = issue.path && issue.path.length > 0 ? issue.path.join('.') : 'argument';
+            return `• **${field}**: ${issue.message}`;
+          }).join('\n')
+        : error.message;
+      userMessage = `⚠️ **Validation Error:**\n${details}`;
+    } else {
+      userMessage = formatError(error).userMessage;
+    }
 
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp({ content: userMessage, ephemeral: true });

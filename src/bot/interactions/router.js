@@ -1329,6 +1329,20 @@ export async function handleInteraction(interaction) {
       errorMessage = '⚠️ This payout request has already been processed or is not in a reviewable state.';
     } else if (error instanceof PayoutProfileError || error instanceof PayoutError || error instanceof EvidenceValidationError) {
       errorMessage = `⚠️ ${error.message}`;
+    } else if (error.name === 'ZodError' || Array.isArray(error.issues)) {
+      const isStaffOrAdmin = identifier.startsWith('admin') || identifier.startsWith('staff_');
+      if (isStaffOrAdmin) {
+        const issues = error.issues || [];
+        const details = issues.length > 0
+          ? issues.map((issue) => {
+              const field = issue.path && issue.path.length > 0 ? issue.path.join('.') : 'argument';
+              return `• **${field}**: ${issue.message}`;
+            }).join('\n')
+          : error.message;
+        errorMessage = `⚠️ **Validation Error:**\n${details}`;
+      } else {
+        errorMessage = `❌ An unexpected error occurred while processing your request. Please try again later. (Reference: ${correlationId})`;
+      }
     } else if (error instanceof AppError) {
       // Generic AppError — show message but keep error level
       errorMessage = `⚠️ ${error.message} (Reference: ${correlationId})`;
