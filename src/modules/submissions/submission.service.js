@@ -94,12 +94,13 @@ export class SubmissionService {
       throw new PlatformNotAllowedError(platform, allowedPlatforms);
     }
 
-    // 6. Check for duplicates (Application layer check)
-    const existing = await this.subRepo.findDuplicateSubmission(userId, campaignId, normalizedUrl);
+    // 6. Check for duplicates (Application layer check: campaign-wide duplicate protection)
+    const existing = await this.subRepo.findDuplicateSubmission(campaignId, normalizedUrl);
     if (existing) {
       throw new DuplicateSubmissionError(normalizedUrl, {
         submissionId: existing.id,
-        submittedAt: existing.submittedAt
+        submittedAt: existing.submittedAt,
+        existingUserId: existing.userId
       });
     }
 

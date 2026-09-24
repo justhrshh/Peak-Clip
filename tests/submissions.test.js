@@ -51,9 +51,15 @@ function createMockSubRepo() {
       }
       return null;
     },
-    async findDuplicateSubmission(userId, campaignId, normalizedUrl) {
-      const key = `${userId}_${campaignId}_${normalizedUrl}`;
-      return submissions.get(key) || null;
+    async findDuplicateSubmission(arg1, arg2, arg3) {
+      const campaignId = arg3 ? arg2 : arg1;
+      const normalizedUrl = arg3 ? arg3 : arg2;
+      for (const s of submissions.values()) {
+        if (s.campaignId === campaignId && s.normalizedUrl === normalizedUrl) {
+          return { ...s };
+        }
+      }
+      return null;
     },
     async getUserSubmissions(userId, { page = 1, limit = 5, campaignId } = {}) {
       let filtered = Array.from(submissions.values()).filter((s) => s.userId === userId);
@@ -359,6 +365,37 @@ describe('Submission Engine Business Rules', () => {
           userId: user.id,
           campaignId: campaign.id,
           rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ?si=second_attempt'
+        }),
+      DuplicateSubmissionError
+    );
+  });
+
+  test('duplicate normalized URL submitted by a DIFFERENT user to the same campaign is rejected (campaign-wide)', async () => {
+    const { service, campRepo, userRepo, user, campaign } = setupFixture();
+
+    // User 1 submits clip
+    await service.createSubmission({
+      userId: user.id,
+      campaignId: campaign.id,
+      rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ'
+    });
+
+    // User 2 joins the same campaign
+    const user2 = { id: 'usr_creator_2', discordId: 'disc_2', status: 'ACTIVE' };
+    userRepo.users.set(user2.id, user2);
+    campRepo.memberships.set(`${user2.id}_${campaign.id}`, {
+      userId: user2.id,
+      campaignId: campaign.id,
+      status: 'ACTIVE'
+    });
+
+    // User 2 attempts to submit the same clip
+    await assert.rejects(
+      async () =>
+        service.createSubmission({
+          userId: user2.id,
+          campaignId: campaign.id,
+          rawUrl: 'https://www.youtube.com/shorts/dQw4w9WgXcQ?tracking=different'
         }),
       DuplicateSubmissionError
     );

@@ -73,20 +73,21 @@ export class SubmissionRepository {
   }
 
   /**
-   * Check for an existing duplicate submission for the same user, campaign, and normalized URL
-   * @param {string} userId
-   * @param {string} campaignId
-   * @param {string} normalizedUrl
+   * Check for an existing duplicate submission for the same campaign and normalized URL (campaign-wide)
+   * Supports both (campaignId, normalizedUrl) and legacy (userId, campaignId, normalizedUrl)
+   * @param {string} arg1 - campaignId or userId
+   * @param {string} arg2 - normalizedUrl or campaignId
+   * @param {string} [arg3] - normalizedUrl if 3 args passed
    * @returns {Promise<object|null>}
    */
-  async findDuplicateSubmission(userId, campaignId, normalizedUrl) {
-    return this.db.submission.findUnique({
+  async findDuplicateSubmission(arg1, arg2, arg3) {
+    const campaignId = arg3 ? arg2 : arg1;
+    const normalizedUrl = arg3 ? arg3 : arg2;
+
+    return this.db.submission.findFirst({
       where: {
-        userId_campaignId_normalizedUrl: {
-          userId,
-          campaignId,
-          normalizedUrl
-        }
+        campaignId,
+        normalizedUrl
       }
     });
   }
