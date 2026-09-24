@@ -103,7 +103,7 @@ export function buildCreatorSearchModal() {
   const queryInput = new TextInputBuilder()
     .setCustomId('query')
     .setLabel('Discord ID, Username, or Display Name')
-    .setPlaceholder('e.g. 978305861430693960 or harshdevil15')
+    .setPlaceholder('e.g. 123456789012345678 or username')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(100);

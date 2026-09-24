@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { logger } from '../../utils/logger.js';
 import { payoutUploadSessionManager, UPLOAD_SESSION_STATUS } from '../../modules/payouts/payout-upload-session.manager.js';
@@ -146,10 +145,6 @@ export async function handleMessageCreate(message, deps = {}) {
     diagnosticPayload,
     '[DIAGNOSTIC] Payout upload handler attachment inspection'
   );
-
-  try {
-    fs.appendFileSync('diagnostic.log', JSON.stringify(diagnosticPayload, null, 2) + '\n---\n');
-  } catch {}
 
   // 6. Single attachment rule (Section 4)
   if (attachmentCount === 0) {
