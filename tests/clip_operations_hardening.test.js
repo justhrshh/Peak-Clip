@@ -219,6 +219,96 @@ describe('PEAK CLIP — FINAL CLIP OPERATIONS HARDENING TEST SUITE', () => {
       // Clean fallback: moves to UNDER_REVIEW, not rejected due to timestamp
       assert.equal(result.submissionStatus, 'UNDER_REVIEW');
     });
+
+    test('IMP-04: Missing publishedAt on SUCCESS provider metrics fails closed to UNDER_REVIEW (not auto-approved, not auto-rejected)', async () => {
+      const now = new Date('2026-09-23T12:00:00.000Z');
+
+      const submission = {
+        id: 's_missing_pub',
+        platform: 'YOUTUBE',
+        url: 'https://youtube.com/shorts/missing12345',
+        submittedAt: now,
+        campaign: { minClipDurationSeconds: 10, maxClipDurationSeconds: 60 }
+      };
+
+      const fakeProvider = {
+        getCurrentMetrics: async () => ({
+          available: true,
+          status: 'SUCCESS',
+          publishedAt: null, // Scraper failed to extract published timestamp
+          durationSeconds: 30,
+          views: 5000,
+          likes: 200,
+          comments: 10
+        })
+      };
+
+      const { service, getUpdated } = createMockService(submission, fakeProvider);
+      const result = await service.runVerification('s_missing_pub');
+
+      assert.equal(result.publishedAt, null);
+      assert.equal(result.submissionAgeSeconds, null);
+      // Fails closed to staff manual review:
+      assert.equal(result.submissionStatus, 'UNDER_REVIEW');
+      assert.notEqual(result.submissionStatus, 'APPROVED'); // Does NOT auto-approve!
+      assert.notEqual(result.submissionStatus, 'REJECTED'); // Does NOT auto-reject!
+      assert.match(result.reason, /Publication timestamp missing or unparseable/i);
+      assert.equal(getUpdated().status, 'UNDER_REVIEW');
+      assert.equal(getUpdated().structuredReason, 'MANUAL_REVIEW_REQUIRED');
+    });
+
+    test('IMP-04: Configurable submissionWindowHours per campaign allows custom submission age boundaries', async () => {
+      const now = new Date('2026-09-23T12:00:00.000Z');
+      // 90 minutes old (5400s)
+      const publishedAt = new Date('2026-09-23T10:30:00.000Z');
+
+      // Campaign A has 2-hour window (submissionWindowHours = 2)
+      const submission2h = {
+        id: 's_custom_window_pass',
+        platform: 'YOUTUBE',
+        url: 'https://youtube.com/shorts/customwin123',
+        submittedAt: now,
+        campaign: {
+          minClipDurationSeconds: 10,
+          maxClipDurationSeconds: 60,
+          submissionWindowHours: 2
+        }
+      };
+
+      const fakeProvider = {
+        getCurrentMetrics: async () => ({
+          available: true,
+          status: 'SUCCESS',
+          publishedAt: publishedAt.toISOString(),
+          durationSeconds: 30,
+          views: 2000
+        })
+      };
+
+      const { service: serviceA } = createMockService(submission2h, fakeProvider);
+      const resA = await serviceA.runVerification('s_custom_window_pass');
+      assert.equal(resA.submissionAgeSeconds, 5400);
+      assert.equal(resA.submissionStatus, 'APPROVED'); // Passes 2-hour window!
+
+      // Campaign B has standard 1-hour window (submissionWindowHours = 1)
+      const submission1h = {
+        id: 's_custom_window_fail',
+        platform: 'YOUTUBE',
+        url: 'https://youtube.com/shorts/customwin456',
+        submittedAt: now,
+        campaign: {
+          minClipDurationSeconds: 10,
+          maxClipDurationSeconds: 60,
+          submissionWindowHours: 1
+        }
+      };
+
+      const { service: serviceB } = createMockService(submission1h, fakeProvider);
+      const resB = await serviceB.runVerification('s_custom_window_fail');
+      assert.equal(resB.submissionAgeSeconds, 5400);
+      assert.equal(resB.submissionStatus, 'REJECTED'); // Exceeds 1-hour window!
+      assert.match(resB.reason, /within 1 hour of publication/i);
+    });
   });
 
   describe('2. Automatic vs Manual Review Routing & 5 Staff Actions', () => {
@@ -338,7 +428,7 @@ describe('PEAK CLIP — FINAL CLIP OPERATIONS HARDENING TEST SUITE', () => {
         })
       });
 
-      const retentionService = new RetentionService(mockDb, mockAdjustmentService, mockAuditRepo, mockProviderResolver);
+      const retentionService = new RetentionService(mockDb, mockAdjustmentService, mockAuditRepo, mockProviderResolver, { deletionStrikes: 1 });
       const result = await retentionService.checkSubmissionRetention('sub_deleted_1');
 
       assert.equal(result.status, 'VIOLATED');

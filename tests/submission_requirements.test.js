@@ -389,7 +389,8 @@ describe('Phase 10B — Submission Requirements, Multi-Platform Boundaries & Ret
               shares: null,
               durationSeconds: dur,
               status: 'AVAILABLE',
-              availability: { views: 'AVAILABLE', duration: 'AVAILABLE' }
+              availability: { views: 'AVAILABLE', duration: 'AVAILABLE' },
+              publishedAt: new Date().toISOString()
             };
           }
         });
@@ -451,7 +452,7 @@ describe('Phase 10B — Submission Requirements, Multi-Platform Boundaries & Ret
       env.submissions.set(sub2.id, sub2);
       env.verificationService.providerResolver = () => ({
         async getCurrentMetrics() {
-          return { isAvailable: true, views: 5000n, likes: 200n, comments: 10n, shares: null, durationSeconds: 30, status: 'AVAILABLE', availability: { views: 'AVAILABLE', duration: 'AVAILABLE' } };
+          return { isAvailable: true, views: 5000n, likes: 200n, comments: 10n, shares: null, durationSeconds: 30, status: 'AVAILABLE', availability: { views: 'AVAILABLE', duration: 'AVAILABLE' }, publishedAt: new Date().toISOString() };
         }
       });
       const res2 = await env.verificationService.runVerification(sub2.id);
@@ -627,7 +628,8 @@ describe('Phase 10B — Submission Requirements, Multi-Platform Boundaries & Ret
               shares: null,
               durationSeconds: 30,
               status: 'AVAILABLE',
-              availability: { views: 'AVAILABLE', duration: 'AVAILABLE' }
+              availability: { views: 'AVAILABLE', duration: 'AVAILABLE' },
+              publishedAt: new Date().toISOString()
             };
           }
         });

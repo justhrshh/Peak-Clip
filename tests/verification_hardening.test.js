@@ -242,7 +242,8 @@ describe('Risk Assessment vs Submission Approval Decoupling', () => {
         likes: 1000n,
         comments: 50n,
         shares: null,
-        status: 'AVAILABLE'
+        status: 'AVAILABLE',
+        publishedAt: new Date().toISOString()
       })
     };
 

@@ -746,7 +746,8 @@ describe('Discord End-to-End Application Lifecycle Flow', () => {
           shares: null,
           status: 'AVAILABLE',
           availability: { views: 'AVAILABLE', likes: 'AVAILABLE', comments: 'AVAILABLE', shares: 'NOT_SUPPORTED' },
-          metadata: { title: 'Viral Showcase', channelTitle: 'Top Creator' }
+          metadata: { title: 'Viral Showcase', channelTitle: 'Top Creator' },
+          publishedAt: new Date().toISOString()
         };
       }
     };

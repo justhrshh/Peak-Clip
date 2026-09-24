@@ -514,7 +514,8 @@ describe('Phase 10D — Verification & Fraud Review Operations', () => {
           likes: 50n,
           comments: 10n,
           shares: null,
-          durationSeconds: 45
+          durationSeconds: 45,
+          publishedAt: new Date().toISOString()
         })
       };
 

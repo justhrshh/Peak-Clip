@@ -342,7 +342,8 @@ describe('Phase 10G State Machine Races & Concurrency Attacks', () => {
         mockDb,
         adjustmentService,
         auditRepo,
-        () => mockProvider
+        () => mockProvider,
+        { deletionStrikes: 1 }
       );
 
       // Run 1: Detects violation, marks VIOLATED, creates 1 adjustment

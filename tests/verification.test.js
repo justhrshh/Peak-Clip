@@ -306,7 +306,8 @@ describe('Verification Service Lifecycle & Worker', () => {
         likes: 500n,
         comments: 45n,
         shares: null,
-        status: 'AVAILABLE'
+        status: 'AVAILABLE',
+        publishedAt: new Date().toISOString()
       })
     };
 

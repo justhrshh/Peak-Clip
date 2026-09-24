@@ -331,7 +331,8 @@ describe('End-to-End Platform Flow', () => {
             comments: 'AVAILABLE',
             shares: 'NOT_SUPPORTED'
           },
-          metadata: { title: 'Viral Clip', channelTitle: 'Creator Channel' }
+          metadata: { title: 'Viral Clip', channelTitle: 'Creator Channel' },
+          publishedAt: new Date().toISOString()
         };
       }
     };
