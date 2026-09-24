@@ -20,6 +20,8 @@ const configSchema = z.object({
   DISCORD_TOKEN: z.string().optional(),
   DISCORD_CLIENT_ID: z.string().optional(),
   DISCORD_GUILD_ID: z.string().optional(),
+  DISCORD_CREATOR_ROLE_ID: z.string().optional(),
+  CLIENT_VERIFIED_ROLE_ID: z.string().optional(),
 
   // Providers
   YOUTUBE_API_KEY: z.string().optional(),
@@ -103,7 +105,9 @@ function loadConfig() {
     discord: {
       token: config.DISCORD_TOKEN,
       clientId: config.DISCORD_CLIENT_ID,
-      guildId: config.DISCORD_GUILD_ID
+      guildId: config.DISCORD_GUILD_ID,
+      creatorRoleId: config.DISCORD_CREATOR_ROLE_ID || null,
+      clientVerifiedRoleId: config.CLIENT_VERIFIED_ROLE_ID || null
     },
     providers: {
       youtubeApiKey: config.YOUTUBE_API_KEY,

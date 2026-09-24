@@ -11,7 +11,7 @@ import * as earningsCommand from './commands/earnings.js';
 import * as payoutCommand from './commands/payout.js';
 import * as adminCommand from './commands/admin.js';
 import * as setupCommand from './commands/setup.js';
-import * as verifyCommand from './commands/verify.js';
+import * as registerCommand from './commands/register.js';
 import * as dashboardCommand from './commands/dashboard.js';
 import { handleMessageCreate } from './events/messageCreate.handler.js';
 
@@ -43,7 +43,7 @@ export function createDiscordClient() {
     payoutCommand,
     adminCommand,
     setupCommand,
-    verifyCommand,
+    registerCommand,
     dashboardCommand
   ];
   for (const cmd of commands) {

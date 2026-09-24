@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { Collection } from 'discord.js';
 import { config } from '../src/config/index.js';
 
-import * as verifyCommand from '../src/bot/commands/verify.js';
+import * as registerCommand from '../src/bot/commands/register.js';
 import * as campaignsCommand from '../src/bot/commands/campaigns.js';
 import * as statisticsCommand from '../src/bot/commands/statistics.js';
 import * as earningsCommand from '../src/bot/commands/earnings.js';
@@ -72,9 +72,10 @@ describe('Discord End-to-End Application Lifecycle Flow', () => {
     store.payoutEvents.length = 0;
     store.auditLogs.length = 0;
 
-    // Configure Admin Role
+    // Configure Admin Role and Creator Role
     originalAdminRoleIds = config.admin.adminRoleIds;
     config.admin.adminRoleIds = [ADMIN_ROLE_ID];
+    config.discord.creatorRoleId = CREATOR_ROLE_ID;
 
     // Seed Active Campaign
     store.campaigns.set('cmp_gaming_2026', {
@@ -550,6 +551,7 @@ describe('Discord End-to-End Application Lifecycle Flow', () => {
 
   afterEach(() => {
     config.admin.adminRoleIds = originalAdminRoleIds;
+    config.discord.creatorRoleId = null;
     userService.userRepo = originalServices.userService_userRepo;
     campaignService.campaignRepo = originalServices.campaignService_campaignRepo;
     submissionService.subRepo = originalServices.submissionService_subRepo;
@@ -660,20 +662,20 @@ describe('Discord End-to-End Application Lifecycle Flow', () => {
     };
 
     // =========================================================================
-    // STEP 1: Creator Onboarding (/verify)
+    // STEP 1: Creator Onboarding (/register)
     // =========================================================================
-    const verifyInteraction = createMockInteraction({
-      commandName: 'verify',
+    const registerInteraction = createMockInteraction({
+      commandName: 'register',
       user: creatorDiscordUser
     });
 
-    await verifyCommand.execute(verifyInteraction);
+    await registerCommand.execute(registerInteraction);
 
-    assert.equal(verifyInteraction.replies.length, 1);
-    const verifyEmbed = verifyInteraction.replies[0].embeds[0];
-    assert.match(verifyEmbed.data.title, /Welcome to Peak Clip, Top Creator!/);
-    assert.equal(verifyInteraction.addedRoles.length, 1);
-    assert.equal(verifyInteraction.addedRoles[0].name, 'Creator');
+    assert.equal(registerInteraction.replies.length, 1);
+    const registerEmbed = registerInteraction.replies[0].embeds[0];
+    assert.match(registerEmbed.data.title, /Welcome to Peak Clip, Top Creator!/);
+    assert.equal(registerInteraction.addedRoles.length, 1);
+    assert.equal(registerInteraction.addedRoles[0].name, 'Creator');
 
     // Confirm user persisted in store
     const creatorUser = Array.from(store.users.values()).find((u) => u.discordId === creatorDiscordUser.id);

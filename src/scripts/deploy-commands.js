@@ -10,7 +10,7 @@ import * as earningsCommand from '../bot/commands/earnings.js';
 import * as payoutCommand from '../bot/commands/payout.js';
 import * as adminCommand from '../bot/commands/admin.js';
 import * as setupCommand from '../bot/commands/setup.js';
-import * as verifyCommand from '../bot/commands/verify.js';
+import * as registerCommand from '../bot/commands/register.js';
 
 const commands = [
   pingCommand,
@@ -22,7 +22,7 @@ const commands = [
   payoutCommand,
   adminCommand,
   setupCommand,
-  verifyCommand
+  registerCommand
 ].map((cmd) => cmd.data.toJSON());
 
 /**
