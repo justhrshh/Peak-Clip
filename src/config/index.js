@@ -43,6 +43,9 @@ const configSchema = z.object({
   METRIC_POLL_BACKOFF_MS: z.coerce.number().min(500).default(5000),
   METRIC_POLL_ENABLED: z.preprocess((val) => val === 'true' || val === true || val === undefined, z.boolean()).default(true),
 
+  // Submission Window Policy
+  SUBMISSION_WINDOW_HOURS: z.coerce.number().min(0.1).default(1),
+
   // Rate Limiting
   RATE_LIMIT_SUBMIT_PER_MINUTE: z.coerce.number().min(1).default(10),
   RATE_LIMIT_PAYOUT_PER_MINUTE: z.coerce.number().min(1).default(5),
@@ -168,6 +171,7 @@ function loadConfig() {
       backoffMs: config.METRIC_POLL_BACKOFF_MS,
       enabled: config.METRIC_POLL_ENABLED
     },
+    submissionWindowHours: config.SUBMISSION_WINDOW_HOURS,
     rateLimits: {
       submitPerMinute: config.RATE_LIMIT_SUBMIT_PER_MINUTE,
       payoutPerMinute: config.RATE_LIMIT_PAYOUT_PER_MINUTE

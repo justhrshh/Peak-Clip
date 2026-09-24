@@ -17,6 +17,7 @@ import {
   ConfigurationAuthError,
   VerificationFailedError
 } from './verification.errors.js';
+import { config } from '../../config/index.js';
 
 export class VerificationService {
   constructor(
@@ -267,7 +268,7 @@ export class VerificationService {
       }
     }
 
-    // 4E. Check 1-hour submission window if publication timestamp is AVAILABLE
+    // 4E. Check submission window & publishedAt (IMP-04: Fail closed if publishedAt missing or unparseable)
     const rawPublishedAt = providerResult.publishedAt || providerResult.metadata?.publishedAt || null;
     let publishedAt = null;
     if (rawPublishedAt) {
@@ -277,119 +278,191 @@ export class VerificationService {
       }
     }
 
-    let submissionAgeSeconds = null;
-    if (publishedAt) {
-      const submittedTime = new Date(submission.submittedAt || submission.createdAt || Date.now()).getTime();
-      const publishedTime = publishedAt.getTime();
-      submissionAgeSeconds = Math.floor((submittedTime - publishedTime) / 1000);
+    const campaignWindowHours = submission.campaign?.submissionWindowHours ||
+      submission.campaign?.requirements?.submissionWindowHours ||
+      submission.requirementsSnapshot?.submissionWindowHours ||
+      config?.submissionWindowHours ||
+      1;
+    const maxSubmissionAgeSeconds = Math.round(Number(campaignWindowHours) * 3600);
 
-      // Future publication timestamp check (with 60-second clock skew tolerance)
-      if (publishedTime > submittedTime + 60000) {
-        const rejectionReason = `Invalid publication timestamp: video publication time (${publishedAt.toISOString()}) is in the future relative to submission time.`;
-        logger.warn({ submissionId, publishedAt: publishedAt.toISOString(), submittedTime }, 'Future publication timestamp detected');
+    if (!publishedAt) {
+      const reviewReason = 'Publication timestamp missing or unparseable - requires manual staff verification';
+      logger.warn({ submissionId, rawPublishedAt, platform: submission.platform }, reviewReason);
 
-        await this.verificationRepo.upsertVerification({
-          submissionId,
-          status: 'COMPLETED',
-          riskLevel: 'HIGH_RISK',
-          score: 100,
-          completedAt: new Date()
-        });
+      await this.verificationRepo.upsertVerification({
+        submissionId,
+        status: 'COMPLETED',
+        riskLevel: 'REVIEW_REQUIRED',
+        score: 50,
+        completedAt: new Date()
+      });
 
-        const updateData = {
-          status: 'REJECTED',
-          rejectionReason,
-          structuredReason: STRUCTURED_REJECTION_REASONS.CAMPAIGN_REQUIREMENT_VIOLATION,
-          verifiedAt: new Date(),
-          durationSeconds,
-          durationStatus: durationAvailability,
-          moderatedAt: new Date(),
-          moderatedBy: 'SYSTEM'
-        };
+      const underReviewUpdate = {
+        status: 'UNDER_REVIEW',
+        rejectionReason: reviewReason,
+        structuredReason: 'MANUAL_REVIEW_REQUIRED',
+        verifiedAt: new Date(),
+        durationSeconds,
+        durationStatus: durationAvailability,
+        lastAvailabilityStatus: providerResult.status,
+        moderatedAt: new Date(),
+        moderatedBy: 'SYSTEM'
+      };
 
-        if (typeof this.submissionRepo.updateSubmission === 'function') {
-          await this.submissionRepo.updateSubmission(submissionId, updateData);
-        } else {
-          await this.submissionRepo.updateSubmissionStatus(submissionId, 'REJECTED', updateData);
-        }
-
-        if (this.moderationRepo && typeof this.moderationRepo.createHistoryEntry === 'function') {
-          await this.moderationRepo.createHistoryEntry({
-            submissionId,
-            action: MODERATION_ACTIONS.AUTO_REJECTED,
-            previousStatus: submission.status,
-            newStatus: 'REJECTED',
-            actorDiscordId: 'SYSTEM',
-            actorType: 'SYSTEM',
-            reason: rejectionReason
-          }).catch(e => logger.warn({ submissionId, err: e.message }, 'Failed to record moderation history'));
-        }
-
-        return {
-          status: 'COMPLETED',
-          riskLevel: 'HIGH_RISK',
-          score: 100,
-          submissionStatus: 'REJECTED',
-          reason: rejectionReason,
-          publishedAt: publishedAt.toISOString(),
-          submissionAgeSeconds
-        };
+      if (typeof this.submissionRepo.updateSubmission === 'function') {
+        await this.submissionRepo.updateSubmission(submissionId, underReviewUpdate);
+      } else {
+        await this.submissionRepo.updateSubmissionStatus(submissionId, 'UNDER_REVIEW', underReviewUpdate);
       }
 
-      // 1-hour window check: submitted time must be <= 1 hour (3600 seconds) after publication
-      // Exactly 1 hour (3600s) is eligible (deterministic boundary: age > 3600 is ineligible)
-      if (submissionAgeSeconds > 3600) {
-        const minutesOld = Math.floor(submissionAgeSeconds / 60);
-        const rejectionReason = `Submission window expired: clips must be submitted within 1 hour of publication. This video was published ${minutesOld} minutes prior to submission.`;
-        logger.warn({ submissionId, submissionAgeSeconds, minutesOld }, 'Submission exceeded 1-hour publication window');
-
-        await this.verificationRepo.upsertVerification({
+      if (this.moderationRepo && typeof this.moderationRepo.createHistoryEntry === 'function') {
+        await this.moderationRepo.createHistoryEntry({
           submissionId,
-          status: 'COMPLETED',
-          riskLevel: 'HIGH_RISK',
-          score: 100,
-          completedAt: new Date()
-        });
-
-        const updateData = {
-          status: 'REJECTED',
-          rejectionReason,
-          structuredReason: STRUCTURED_REJECTION_REASONS.CAMPAIGN_REQUIREMENT_VIOLATION,
-          verifiedAt: new Date(),
-          durationSeconds,
-          durationStatus: durationAvailability,
-          moderatedAt: new Date(),
-          moderatedBy: 'SYSTEM'
-        };
-
-        if (typeof this.submissionRepo.updateSubmission === 'function') {
-          await this.submissionRepo.updateSubmission(submissionId, updateData);
-        } else {
-          await this.submissionRepo.updateSubmissionStatus(submissionId, 'REJECTED', updateData);
-        }
-
-        if (this.moderationRepo && typeof this.moderationRepo.createHistoryEntry === 'function') {
-          await this.moderationRepo.createHistoryEntry({
-            submissionId,
-            action: MODERATION_ACTIONS.AUTO_REJECTED,
-            previousStatus: submission.status,
-            newStatus: 'REJECTED',
-            actorDiscordId: 'SYSTEM',
-            actorType: 'SYSTEM',
-            reason: rejectionReason
-          }).catch(e => logger.warn({ submissionId, err: e.message }, 'Failed to record moderation history'));
-        }
-
-        return {
-          status: 'COMPLETED',
-          riskLevel: 'HIGH_RISK',
-          score: 100,
-          submissionStatus: 'REJECTED',
-          reason: rejectionReason,
-          publishedAt: publishedAt.toISOString(),
-          submissionAgeSeconds
-        };
+          action: MODERATION_ACTIONS.SENT_TO_REVIEW,
+          previousStatus: submission.status,
+          newStatus: 'UNDER_REVIEW',
+          actorDiscordId: 'SYSTEM',
+          actorType: 'SYSTEM',
+          reason: reviewReason
+        }).catch((e) => logger.warn({ submissionId, err: e.message }, 'Failed to record moderation history'));
       }
+
+      if (submission.user?.discordId) {
+        notifySubmissionUnderReview({
+          discordId: submission.user.discordId,
+          campaignName: submission.campaign?.name,
+          videoUrl: submission.url
+        }).catch((e) => logger.warn({ submissionId, err: e.message }, 'Failed to notify creator of under review'));
+      }
+
+      notifyStaffManualReviewRequired({
+        submission,
+        reason: reviewReason
+      }).catch((e) => logger.warn({ submissionId, err: e.message }, 'Failed to dispatch staff alert for review'));
+
+      return {
+        status: 'COMPLETED',
+        riskLevel: 'REVIEW_REQUIRED',
+        score: 50,
+        submissionStatus: 'UNDER_REVIEW',
+        reason: reviewReason,
+        publishedAt: null,
+        submissionAgeSeconds: null,
+        durationSeconds
+      };
+    }
+
+    const submittedTime = new Date(submission.submittedAt || submission.createdAt || Date.now()).getTime();
+    const publishedTime = publishedAt.getTime();
+    const submissionAgeSeconds = Math.floor((submittedTime - publishedTime) / 1000);
+
+    // Future publication timestamp check (with 60-second clock skew tolerance)
+    if (publishedTime > submittedTime + 60000) {
+      const rejectionReason = `Invalid publication timestamp: video publication time (${publishedAt.toISOString()}) is in the future relative to submission time.`;
+      logger.warn({ submissionId, publishedAt: publishedAt.toISOString(), submittedTime }, 'Future publication timestamp detected');
+
+      await this.verificationRepo.upsertVerification({
+        submissionId,
+        status: 'COMPLETED',
+        riskLevel: 'HIGH_RISK',
+        score: 100,
+        completedAt: new Date()
+      });
+
+      const updateData = {
+        status: 'REJECTED',
+        rejectionReason,
+        structuredReason: STRUCTURED_REJECTION_REASONS.CAMPAIGN_REQUIREMENT_VIOLATION,
+        verifiedAt: new Date(),
+        durationSeconds,
+        durationStatus: durationAvailability,
+        moderatedAt: new Date(),
+        moderatedBy: 'SYSTEM'
+      };
+
+      if (typeof this.submissionRepo.updateSubmission === 'function') {
+        await this.submissionRepo.updateSubmission(submissionId, updateData);
+      } else {
+        await this.submissionRepo.updateSubmissionStatus(submissionId, 'REJECTED', updateData);
+      }
+
+      if (this.moderationRepo && typeof this.moderationRepo.createHistoryEntry === 'function') {
+        await this.moderationRepo.createHistoryEntry({
+          submissionId,
+          action: MODERATION_ACTIONS.AUTO_REJECTED,
+          previousStatus: submission.status,
+          newStatus: 'REJECTED',
+          actorDiscordId: 'SYSTEM',
+          actorType: 'SYSTEM',
+          reason: rejectionReason
+        }).catch(e => logger.warn({ submissionId, err: e.message }, 'Failed to record moderation history'));
+      }
+
+      return {
+        status: 'COMPLETED',
+        riskLevel: 'HIGH_RISK',
+        score: 100,
+        submissionStatus: 'REJECTED',
+        reason: rejectionReason,
+        publishedAt: publishedAt.toISOString(),
+        submissionAgeSeconds
+      };
+    }
+
+    // Configurable submission window check: submitted time must be <= maxSubmissionAgeSeconds after publication
+    // Exactly maxSubmissionAgeSeconds is eligible (deterministic boundary: age > maxSubmissionAgeSeconds is ineligible)
+    if (submissionAgeSeconds > maxSubmissionAgeSeconds) {
+      const windowStr = campaignWindowHours === 1 ? '1 hour' : `${campaignWindowHours} hours`;
+      const minutesOld = Math.floor(submissionAgeSeconds / 60);
+      const rejectionReason = `Submission window expired: clips must be submitted within ${windowStr} of publication. This video was published ${minutesOld} minutes prior to submission.`;
+      logger.warn({ submissionId, submissionAgeSeconds, minutesOld, maxSubmissionAgeSeconds }, 'Submission exceeded publication window');
+
+      await this.verificationRepo.upsertVerification({
+        submissionId,
+        status: 'COMPLETED',
+        riskLevel: 'HIGH_RISK',
+        score: 100,
+        completedAt: new Date()
+      });
+
+      const updateData = {
+        status: 'REJECTED',
+        rejectionReason,
+        structuredReason: STRUCTURED_REJECTION_REASONS.CAMPAIGN_REQUIREMENT_VIOLATION,
+        verifiedAt: new Date(),
+        durationSeconds,
+        durationStatus: durationAvailability,
+        moderatedAt: new Date(),
+        moderatedBy: 'SYSTEM'
+      };
+
+      if (typeof this.submissionRepo.updateSubmission === 'function') {
+        await this.submissionRepo.updateSubmission(submissionId, updateData);
+      } else {
+        await this.submissionRepo.updateSubmissionStatus(submissionId, 'REJECTED', updateData);
+      }
+
+      if (this.moderationRepo && typeof this.moderationRepo.createHistoryEntry === 'function') {
+        await this.moderationRepo.createHistoryEntry({
+          submissionId,
+          action: MODERATION_ACTIONS.AUTO_REJECTED,
+          previousStatus: submission.status,
+          newStatus: 'REJECTED',
+          actorDiscordId: 'SYSTEM',
+          actorType: 'SYSTEM',
+          reason: rejectionReason
+        }).catch(e => logger.warn({ submissionId, err: e.message }, 'Failed to record moderation history'));
+      }
+
+      return {
+        status: 'COMPLETED',
+        riskLevel: 'HIGH_RISK',
+        score: 100,
+        submissionStatus: 'REJECTED',
+        reason: rejectionReason,
+        publishedAt: publishedAt.toISOString(),
+        submissionAgeSeconds
+      };
     }
 
     // 5. Handle DATA_UNAVAILABLE capability response
