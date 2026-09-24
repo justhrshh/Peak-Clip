@@ -16,14 +16,15 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Backups and database dumps
-backups/
-
-# Redis dump & temp files
+# Redis dump & local backups
 dump.rdb
+backups/
 scratch/
-storage/*
-!storage/.gitkeep
+storage/evidence/
+
+# Optional sqlite if used for local tests
+*.db
+*.db-journal
 
 # Audit script outputs
 audit-output/

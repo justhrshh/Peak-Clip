@@ -6,6 +6,7 @@ import { testRedisConnection } from './queues/redis.js';
 import { closeAllQueues } from './queues/index.js';
 import { startWorkers, stopWorkers } from './workers/index.js';
 import { startDiscordBot, stopDiscordBot } from './bot/client.js';
+import { startHealthServer, stopHealthServer } from './server/health.js';
 
 let isShuttingDown = false;
 
@@ -37,6 +38,9 @@ export async function bootstrap() {
   // 4. Start Discord Bot
   await startDiscordBot();
 
+  // 5. Start lightweight HTTP health server (Render 0.0.0.0:$PORT requirement)
+  await startHealthServer();
+
   logger.info('Platform foundation initialized successfully.');
 }
 
@@ -56,6 +60,9 @@ export async function shutdown(signal) {
   }, 10000);
 
   try {
+    // Teardown HTTP Health Server
+    await stopHealthServer();
+
     // Teardown Discord Bot
     await stopDiscordBot();
 

@@ -94,14 +94,12 @@ export class SubmissionService {
       throw new PlatformNotAllowedError(platform, allowedPlatforms);
     }
 
-    // 6. Check for duplicates (Campaign-wide check, allows resubmission of REJECTED clips)
-    const existing = await this.subRepo.findDuplicateSubmission(campaignId, normalizedUrl);
+    // 6. Check for duplicates (Application layer check)
+    const existing = await this.subRepo.findDuplicateSubmission(userId, campaignId, normalizedUrl);
     if (existing) {
       throw new DuplicateSubmissionError(normalizedUrl, {
         submissionId: existing.id,
-        submittedAt: existing.submittedAt,
-        userId: existing.userId,
-        status: existing.status
+        submittedAt: existing.submittedAt
       });
     }
 

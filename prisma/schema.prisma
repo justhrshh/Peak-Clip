@@ -1,8 +1,9 @@
 // Prisma configuration for PostgreSQL database
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -194,8 +195,8 @@ model Submission {
   financialAdjustments FinancialAdjustment[]
   moderationHistory    SubmissionModerationHistory[]
 
-  // Campaign-wide active duplicate index enforced via PostgreSQL partial unique index
-  @@index([campaignId, normalizedUrl])
+  // Enforce duplicate protection per user, campaign, and normalized URL
+  @@unique([userId, campaignId, normalizedUrl])
   @@index([retentionStatus, retentionDeadline])
   @@map("submissions")
 }

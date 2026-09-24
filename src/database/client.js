@@ -43,27 +43,42 @@ export function getPrismaClient() {
 }
 
 /**
- * Test database connectivity
+ * Test database connectivity with automatic retry for serverless wake-up (e.g. Neon)
+ * @param {number} [maxRetries=3]
+ * @param {number} [delayMs=2000]
  * @returns {Promise<boolean>}
  */
-export async function testDatabaseConnection() {
+export async function testDatabaseConnection(maxRetries = 3, delayMs = 2000) {
   if (!config.db.url) {
     logger.warn('Skipping database connectivity test: DATABASE_URL not configured.');
     return false;
   }
 
-  try {
-    const client = getPrismaClient();
-    await client.$queryRaw`SELECT 1`;
-    logger.info('Database connection successfully established.');
-    return true;
-  } catch (error) {
-    logger.error({ err: error.message }, 'Database connection test failed.');
-    if (config.isProduction) {
-      throw new DatabaseError(`Database connection failed: ${error.message}`);
+  const client = getPrismaClient();
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await client.$queryRaw`SELECT 1`;
+      logger.info('Database connection successfully established.');
+      return true;
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries;
+      if (isLastAttempt) {
+        logger.error({ err: error.message, attempts: maxRetries }, 'Database connection test failed after all retries.');
+        if (config.isProduction) {
+          throw new DatabaseError(`Database connection failed after ${maxRetries} attempts: ${error.message}`);
+        }
+        return false;
+      }
+      logger.warn(
+        { attempt, maxRetries, delayMs, err: error.message },
+        'Database connection attempt failed (possible serverless cold start). Retrying...'
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    return false;
   }
+
+  return false;
 }
 
 /**
