@@ -5,7 +5,9 @@ import { STAFF_COMPONENTS, staffIds } from '../src/bot/components/staffComponent
 import { buildCampaignCreateModal } from '../src/bot/components/staff.modals.js';
 import {
   handleStaffCampaignReport,
-  handleStaffCampaignCreateModalSubmit
+  handleStaffCampaignCreateModalSubmit,
+  getModalTextInput,
+  parseCpmAndBudget
 } from '../src/bot/interactions/staff.interactions.js';
 import { handleInteraction } from '../src/bot/interactions/router.js';
 import { adminCampaignService } from '../src/modules/admin/admin.campaign.service.js';
@@ -334,5 +336,173 @@ describe('Campaign Report & Creation Enhancements', () => {
 
     await handleInteraction(interaction);
     assert.equal(reportHandledId, 'camp_route_test', 'Router must route CMP_REPORT to handler with campaignId');
+  });
+
+  test('5. Round-trip test: buildCampaignCreateModal -> emitted customIds -> handleStaffCampaignCreateModalSubmit', async () => {
+    // 1. Build the modal from the builder
+    const modal = buildCampaignCreateModal();
+    const emittedCustomIds = modal.components.map((row) => row.components[0].data.custom_id);
+    const emittedSet = new Set(emittedCustomIds);
+
+    // Verify builder components
+    assert.equal(emittedCustomIds.length, 5, 'Builder must emit exactly 5 fields (Discord max)');
+    assert.deepEqual(emittedCustomIds, ['name', 'client', 'cpm_budget', 'platforms', 'description']);
+
+    // 2. Prepare mock field data using only emitted customIds
+    const fieldValues = {
+      name: 'Apex Legends Clip Storm',
+      client: 'Respawn Gaming',
+      cpm_budget: '2.50 / 7500',
+      platforms: 'youtube, tiktok, instagram',
+      description: 'Create high quality clips of clutch rounds and wins.'
+    };
+
+    // Track every field requested by the handler
+    const accessedFieldIds = new Set();
+
+    let capturedPayload = null;
+    adminCampaignService.createCampaign = async (payload, actor) => {
+      capturedPayload = payload;
+      return {
+        id: 'camp_rt_test_1',
+        name: payload.name,
+        clientName: payload.clientName
+      };
+    };
+
+    let replyPayload = null;
+    const fakeInteraction = {
+      isModalSubmit: () => true,
+      customId: modal.data.custom_id,
+      user: { id: 'staff_rt_admin', username: 'SuperStaff' },
+      member: { permissions: PermissionsBitField.Flags.Administrator },
+      fields: {
+        getTextInputValue: (id) => {
+          accessedFieldIds.add(id);
+          // If the handler queries an ID that the builder did not emit, simulate Discord.js throwing ModalSubmitInteractionFieldNotFound
+          if (!emittedSet.has(id)) {
+            const err = new Error(`Required field with custom id "${id}" not found`);
+            err.name = 'DiscordjsTypeError [ModalSubmitInteractionFieldNotFound]';
+            err.code = 'ModalSubmitInteractionFieldNotFound';
+            throw err;
+          }
+          return fieldValues[id] ?? null;
+        },
+        getStringSelectValues: (id) => {
+          accessedFieldIds.add(id);
+          return [];
+        }
+      },
+      deferReply: async () => {},
+      editReply: async (payload) => {
+        replyPayload = payload;
+      }
+    };
+
+    // 3. Execute handler - must complete without throwing any field-not-found error
+    await assert.doesNotReject(async () => {
+      await handleStaffCampaignCreateModalSubmit(fakeInteraction);
+    });
+
+    // 4. Assert handler reads ONLY IDs that the builder emits
+    for (const accessedId of accessedFieldIds) {
+      assert.ok(
+        emittedSet.has(accessedId),
+        `Handler attempted to read field "${accessedId}" which is NOT emitted by buildCampaignCreateModal!`
+      );
+    }
+
+    // 5. Assert campaign was created with properly parsed fields and defaults
+    assert.ok(capturedPayload, 'Campaign payload must be sent to createCampaign');
+    assert.equal(capturedPayload.name, 'Apex Legends Clip Storm');
+    assert.equal(capturedPayload.clientName, 'Respawn Gaming');
+    assert.equal(capturedPayload.payRate, 2.5);
+    assert.equal(capturedPayload.totalBudget, 7500);
+    assert.deepEqual(capturedPayload.requirements.allowedPlatforms, ['youtube', 'tiktok', 'instagram']);
+    assert.equal(capturedPayload.description, 'Create high quality clips of clutch rounds and wins.');
+    assert.equal(capturedPayload.creatorEarningCap, 600); // from CAMPAIGN_POLICY
+    assert.ok(replyPayload?.content?.includes('created successfully'));
+  });
+
+  test('6. handleStaffCampaignCreateModalSubmit strictly validates CPM & budget and never silently defaults', async () => {
+    const invalidInputs = [
+      '',
+      '   ',
+      'invalid_string',
+      '1.50',            // missing budget
+      '/ 5000',          // missing cpm
+      '-2.0 / 5000',     // negative cpm
+      '2.0 / -5000',     // negative budget
+      '0 / 5000',        // zero cpm
+      '2.0 / 0'          // zero budget
+    ];
+
+    let createdCalled = false;
+    adminCampaignService.createCampaign = async () => {
+      createdCalled = true;
+      return {};
+    };
+
+    for (const badRateBudget of invalidInputs) {
+      createdCalled = false;
+      let replyMessage = '';
+      const fakeInteraction = {
+        isModalSubmit: () => true,
+        customId: STAFF_COMPONENTS.CMP_CREATE_MODAL,
+        user: { id: 'staff_admin_1', username: 'Admin' },
+        member: { permissions: PermissionsBitField.Flags.Administrator },
+        fields: {
+          getTextInputValue: (id) => {
+            if (id === 'name') return 'Valid Name';
+            if (id === 'client') return 'Valid Client';
+            if (id === 'cpm_budget') return badRateBudget;
+            return null;
+          }
+        },
+        deferReply: async () => {},
+        editReply: async (payload) => {
+          replyMessage = payload.content;
+        }
+      };
+
+      await handleStaffCampaignCreateModalSubmit(fakeInteraction);
+      assert.equal(createdCalled, false, `Must not create campaign when cpm_budget is "${badRateBudget}"`);
+      assert.ok(
+        replyMessage.includes('Invalid CPM Rate') || replyMessage.includes('Budget Too Low'),
+        `Expected rejection message for "${badRateBudget}", got: ${replyMessage}`
+      );
+    }
+  });
+
+  test('7. getModalTextInput safely returns null when a field is missing without throwing', () => {
+    // 1. With Discord.js ModalSubmitFields throwing behavior
+    const mockInteractionThrowing = {
+      fields: {
+        getTextInputValue: (id) => {
+          if (id === 'present') return 'hello';
+          const err = new Error(`Required field with custom id "${id}" not found`);
+          err.name = 'DiscordjsTypeError [ModalSubmitInteractionFieldNotFound]';
+          throw err;
+        }
+      }
+    };
+
+    assert.equal(getModalTextInput(mockInteractionThrowing, 'present'), 'hello');
+    assert.equal(getModalTextInput(mockInteractionThrowing, 'absent'), null);
+
+    // 2. With fields.fields Collection
+    const fieldsCollection = new Map();
+    fieldsCollection.set('present', { value: 'world' });
+    const mockInteractionCollection = {
+      fields: {
+        fields: fieldsCollection
+      }
+    };
+    assert.equal(getModalTextInput(mockInteractionCollection, 'present'), 'world');
+    assert.equal(getModalTextInput(mockInteractionCollection, 'absent'), null);
+
+    // 3. Null or undefined interaction
+    assert.equal(getModalTextInput(null, 'foo'), null);
+    assert.equal(getModalTextInput({}, 'foo'), null);
   });
 });

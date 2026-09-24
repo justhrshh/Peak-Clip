@@ -9,6 +9,7 @@ import { adminCampaignService } from '../../modules/admin/admin.campaign.service
 import { adminPayoutService } from '../../modules/admin/admin.payout.service.js';
 import { adminAuditService } from '../../modules/admin/audit.service.js';
 import { campaignService } from '../../modules/campaigns/campaign.service.js';
+import { CAMPAIGN_POLICY } from '../../modules/campaigns/campaign.policy.js';
 import { evidenceService } from '../../modules/evidence/evidence.service.js';
 import { verificationService } from '../../modules/verification/verification.service.js';
 import { payoutService } from '../../modules/payouts/payout.service.js';
@@ -535,39 +536,110 @@ export async function handleStaffCampaignCreateBtn(interaction) {
   await interaction.showModal(modal);
 }
 
+/**
+ * Safely extracts a text input value from a ModalSubmitInteraction without throwing
+ * if the component was not included in the submitted modal.
+ *
+ * @param {import('discord.js').ModalSubmitInteraction} interaction
+ * @param {string} customId
+ * @returns {string|null}
+ */
+export function getModalTextInput(interaction, customId) {
+  if (!interaction?.fields) return null;
+  if (interaction.fields.fields && typeof interaction.fields.fields.get === 'function') {
+    const field = interaction.fields.fields.get(customId);
+    return field?.value ?? null;
+  }
+  try {
+    if (typeof interaction.fields.getTextInputValue === 'function') {
+      return interaction.fields.getTextInputValue(customId) ?? null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Parse CPM and total budget from a combined string input.
+ * Accepts formats like: "1.50 / 3000", "$1.50 / $3000", "2.0, 5000", "2.0 | 5000"
+ * Returns null for values that are missing, non-numeric, or <= 0.
+ *
+ * @param {string|null} rawRateBudget
+ * @returns {{ cpm: number|null, totalBudget: number|null }}
+ */
+export function parseCpmAndBudget(rawRateBudget) {
+  if (!rawRateBudget || typeof rawRateBudget !== 'string') {
+    return { cpm: null, totalBudget: null };
+  }
+
+  // Remove currency symbols and surrounding whitespace
+  const sanitized = rawRateBudget.replace(/[$€£]/g, '').trim();
+
+  // Try split by common delimiters: '/', '|', ',', ';'
+  let parts = sanitized.split(/[\/,|;]/).map((s) => s.trim()).filter(Boolean);
+
+  // If no delimiter was used, fallback to splitting by whitespace
+  if (parts.length < 2) {
+    const spaceParts = sanitized.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    if (spaceParts.length >= 2) {
+      parts = spaceParts;
+    }
+  }
+
+  if (parts.length >= 2) {
+    const parsedCpm = parseFloat(parts[0]);
+    const parsedBudget = parseFloat(parts[1]);
+    return {
+      cpm: !isNaN(parsedCpm) && parsedCpm > 0 ? parsedCpm : null,
+      totalBudget: !isNaN(parsedBudget) && parsedBudget > 0 ? parsedBudget : null
+    };
+  }
+
+  return { cpm: null, totalBudget: null };
+}
+
 export async function handleStaffCampaignCreateModalSubmit(interaction) {
   assertAdminPermission(interaction, AdminPermission.CAMPAIGN_CREATE);
   if (!interaction.deferred && !interaction.replied) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 
-  const name = interaction.fields.getTextInputValue('name')?.trim();
-  const clientName = interaction.fields.getTextInputValue('client')?.trim();
-  const rawRateBudget = interaction.fields.getTextInputValue('cpm_budget')?.trim();
-  const rawCpm = interaction.fields.getTextInputValue('cpm')?.trim();
-  const rawBudget = interaction.fields.getTextInputValue('budget')?.trim();
-  const descriptionRaw = interaction.fields.getTextInputValue('description')?.trim();
+  const name = getModalTextInput(interaction, 'name')?.trim();
+  const clientName = getModalTextInput(interaction, 'client')?.trim();
+  const rawRateBudget = getModalTextInput(interaction, 'cpm_budget')?.trim();
+  const descriptionRaw = getModalTextInput(interaction, 'description')?.trim();
 
-  let cpm = 10.0;
-  let totalBudget = 1000.0;
+  if (!name || name.length < 3) {
+    await safeEditReply(interaction, {
+      content: '❌ **Invalid Campaign Name**: Campaign name must be at least 3 characters long.'
+    });
+    return;
+  }
 
-  if (rawRateBudget) {
-    const parts = rawRateBudget.split(/[\/,|]/).map((s) => s.trim()).filter(Boolean);
-    if (parts.length >= 2) {
-      cpm = parseFloat(parts[0]) || 10.0;
-      totalBudget = parseFloat(parts[1]) || 1000.0;
-    } else {
-      const nums = rawRateBudget.match(/\d+(?:\.\d+)?/g);
-      if (nums && nums.length >= 2) {
-        cpm = parseFloat(nums[0]) || 10.0;
-        totalBudget = parseFloat(nums[1]) || 1000.0;
-      } else if (nums && nums.length === 1) {
-        cpm = parseFloat(nums[0]) || 10.0;
-      }
-    }
-  } else {
-    if (rawCpm) cpm = parseFloat(rawCpm) || 10.0;
-    if (rawBudget) totalBudget = parseFloat(rawBudget) || 1000.0;
+  if (!clientName || clientName.length < 2) {
+    await safeEditReply(interaction, {
+      content: '❌ **Invalid Client Name**: Client / Sponsor name must be at least 2 characters long.'
+    });
+    return;
+  }
+
+  const { cpm, totalBudget } = parseCpmAndBudget(rawRateBudget);
+
+  if (!cpm || !totalBudget) {
+    await safeEditReply(interaction, {
+      content:
+        '❌ **Invalid CPM Rate & Total Budget**: Please provide both values in the format `CPM / Budget` (e.g. `1.50 / 3000`). Both values must be positive numbers.'
+    });
+    return;
+  }
+
+  const minBudget = Number(CAMPAIGN_POLICY.MINIMUM_TOTAL_BUDGET);
+  if (totalBudget < minBudget) {
+    await safeEditReply(interaction, {
+      content: `❌ **Budget Too Low**: Total budget must be at least $${minBudget.toFixed(2)}.`
+    });
+    return;
   }
 
   // Parse allowed platforms (supports TextInput or legacy StringSelectMenu fallback)
@@ -587,7 +659,7 @@ export async function handleStaffCampaignCreateModalSubmit(interaction) {
 
   // 1. Try reading from StringSelectMenu component (legacy fallback)
   try {
-    if (typeof interaction.fields.getStringSelectValues === 'function') {
+    if (typeof interaction.fields?.getStringSelectValues === 'function') {
       const selected = interaction.fields.getStringSelectValues('platforms');
       if (Array.isArray(selected) && selected.length > 0) {
         allowedPlatforms = selected
@@ -600,23 +672,19 @@ export async function handleStaffCampaignCreateModalSubmit(interaction) {
     // If not a StringSelectMenu component, fall through to text input
   }
 
-  // 2. Read from TextInput component
+  // 2. Read from TextInput component safely
   if (allowedPlatforms.length === 0) {
-    try {
-      const platformsRaw = interaction.fields.getTextInputValue('platforms')?.trim();
-      if (platformsRaw) {
-        if (platformsRaw.toUpperCase() === 'ALL') {
-          allowedPlatforms = [...VALID_PLATFORMS];
-        } else {
-          allowedPlatforms = platformsRaw
-            .split(/[,/;\s]+/)
-            .map((p) => p.trim().toLowerCase())
-            .map((p) => PLATFORM_ALIASES[p] || p)
-            .filter((p) => VALID_PLATFORMS.includes(p));
-        }
+    const platformsRaw = getModalTextInput(interaction, 'platforms')?.trim();
+    if (platformsRaw) {
+      if (platformsRaw.toUpperCase() === 'ALL') {
+        allowedPlatforms = [...VALID_PLATFORMS];
+      } else {
+        allowedPlatforms = platformsRaw
+          .split(/[,/;\s]+/)
+          .map((p) => p.trim().toLowerCase())
+          .map((p) => PLATFORM_ALIASES[p] || p)
+          .filter((p) => VALID_PLATFORMS.includes(p));
       }
-    } catch {
-      // ignore
     }
   }
 
@@ -640,6 +708,7 @@ export async function handleStaffCampaignCreateModalSubmit(interaction) {
     description,
     payRate: cpm,
     totalBudget,
+    creatorEarningCap: Number(CAMPAIGN_POLICY.DEFAULT_CREATOR_EARNING_CAP),
     requirements: { allowedPlatforms },
     startsAt: new Date().toISOString().split('T')[0],
     endsAt: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]

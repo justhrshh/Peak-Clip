@@ -424,8 +424,7 @@ describe('PEAK CLIP — Staff Control Plane Test Suite', () => {
         fields: {
           name: 'Viral Clips 2026',
           client: 'Apex Brands',
-          cpm: '12.50',
-          budget: '2500'
+          cpm_budget: '12.50 / 2500'
         }
       });
       await handleInteraction(interaction);
