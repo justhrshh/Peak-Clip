@@ -342,3 +342,42 @@ Errors during external platform provider communication are classified into disti
 - Powered by `AdminAuditEvent` with indexed lookup by `entityType`, `entityId`, `actorDiscordId`, and `action`.
 - Audit records store actor, action, previous state, new state, reason, and timestamp.
 - The repository exposes **zero update or delete methods**, guaranteeing an immutable, append-only operational record.
+
+---
+
+## 🚀 Client Deployment & Zero-Provisioning Architecture
+
+In client Discord servers, Peak Clip runs with **zero automated provisioning**:
+- The bot **never** creates, renames, or deletes roles, channels, or categories (`ENABLE_AUTO_PROVISIONING=false`).
+- All server integration is configured strictly by Discord Snowflake IDs via environment variables.
+- Staff channels are private to admin roles; creator buttons only act on the user who clicked (own Discord ID, ephemeral responses). Staff buttons are never placed in creator channels.
+
+### 📌 Operational Panels Setup Command (`/admin setup panels`)
+Staff administrators holding configured `DISCORD_ADMIN_ROLE_IDS` can deploy canonical hubs and navigation panels into existing channels on demand:
+- **Command**: `/admin setup panels`
+- **Behavior**:
+  - Iterates through all configured `DISCORD_CHANNEL_*` variables.
+  - Sends or edits the matching canonical panel (embed + action row buttons) in existing channels.
+  - **Idempotent**: Persists message IDs in `SystemSetting` (`panel_msg:<key>`) so rerunning edits existing messages rather than creating duplicates.
+  - **Author-Safe**: Strictly touches bot-authored messages. Never edits or deletes messages from any other user or bot.
+  - **Graceful Skip**: If a channel ID is unset, non-existent, or lacks permissions (`ViewChannel`, `SendMessages`, `EmbedLinks`), it logs a warning, skips that panel, and returns a detailed ephemeral report without failing the command.
+
+### 📋 Full Channel Variable Mapping Audit
+
+| Environment Variable | Purpose / Feature | Panel Key | Dev Server Channel | Required in Production | Behavior if Unset |
+|---|---|---|---|:---:|---|
+| `DISCORD_CHANNEL_REVIEW_QUEUE_ID` | Moderation queue for flagged/pending submissions | `reviewQueue` | `#review-queue` | **YES** | Startup blocked in production |
+| `DISCORD_CHANNEL_BOT_ERRORS_ID` | System error alerts, stack traces, and diagnostics | `botErrors` | `#bot-errors` | **YES** | Startup blocked in production |
+| `DISCORD_CHANNEL_CAMPAIGNS_ID` | Creator active campaigns directory & join interface | `campaigns` | `#campaigns` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_SUBMISSIONS_ID` | Creator clip submission hub & status check | `submissions` | `#submissions` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_CREATOR_DASHBOARD_ID` | Creator workspace & personal dashboard entry hub | `creatorDashboard` | `#dashboard` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_STATS_ID` | Creator verified views & performance analytics | `stats` | `#stats` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_EARNINGS_ID` | Creator earnings ledger & available balance | `earnings` | `#earnings` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_PAYOUTS_ID` | Creator payout request wizard & payment profile | `payouts` | `#payouts` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_PAYOUT_QUEUE_ID` | Staff financial payout review & approval queue | `payoutQueue` | `#payout-queue` | Optional | Falls back to review queue for alerts; panel skipped |
+| `DISCORD_CHANNEL_AUDIT_LOG_ID` | Staff immutable administrative audit trail hub | `auditLog` | `#audit-log` | Optional | Falls back to review queue for alerts; panel skipped |
+| `DISCORD_CHANNEL_CREATORS_ID` | Staff creator directory, verification, and bans | `creators` | `#creators` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_CAMPAIGN_MANAGEMENT_ID` | Staff campaign creation, editing, & lifecycle | `campaignManagement` | `#campaign-management` | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_STAFF_DASHBOARD_ID` | Staff Control Center overview & quick navigation | `staffDashboard` | `#dashboard` (STAFF) | Optional | Skipped during panel setup |
+| `DISCORD_CHANNEL_BOT_STATUS_ID` | Operational health, uptime, & polling status | `botStatus` | `#bot-status` | Optional | Skipped during panel setup |
+
