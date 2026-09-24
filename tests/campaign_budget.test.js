@@ -516,6 +516,18 @@ describe('4. Budget Cap Enforcement (applyBudgetCaps)', () => {
     const { actualCredit } = applyBudgetCaps('0.00', '500.00', '500.00');
     assert.equal(actualCredit.toFixed(2), '0.00');
   });
+
+  test('uncapped creator (creatorRemaining is null) credits full raw amount beyond 600', () => {
+    const { actualCredit, cappedBy } = applyBudgetCaps('1200.00', '5000.00', null);
+    assert.equal(actualCredit.toFixed(2), '1200.00');
+    assert.equal(cappedBy, null);
+  });
+
+  test('uncapped campaign and creator (both null) credits full raw amount', () => {
+    const { actualCredit, cappedBy } = applyBudgetCaps('2500.00', null, null);
+    assert.equal(actualCredit.toFixed(2), '2500.00');
+    assert.equal(cappedBy, null);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

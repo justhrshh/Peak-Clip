@@ -52,41 +52,51 @@ export function calculateGrossAmount(eligibleViews, ratePerThousand) {
  * @returns {{ actualCredit: Prisma.Decimal, cappedBy: string|null }}
  *   actualCredit is the amount to credit; cappedBy indicates what applied the cap (null = no cap, 'CAMPAIGN', 'CREATOR', 'BOTH')
  */
-export function applyBudgetCaps(rawAmount, campaignRemaining, creatorRemaining) {
+export function applyBudgetCaps(rawAmount, campaignRemaining, creatorRemaining = null) {
   const zero = new Prisma.Decimal('0.00');
 
   const raw = rawAmount != null ? new Prisma.Decimal(rawAmount.toString()) : zero;
-  const campRem = campaignRemaining != null ? new Prisma.Decimal(campaignRemaining.toString()) : zero;
-  const creatRem = creatorRemaining != null ? new Prisma.Decimal(creatorRemaining.toString()) : zero;
+  if (raw.lessThanOrEqualTo(0)) {
+    return { actualCredit: zero, cappedBy: null };
+  }
+
+  const campRem = campaignRemaining != null ? new Prisma.Decimal(campaignRemaining.toString()) : null;
+  const creatRem = creatorRemaining != null ? new Prisma.Decimal(creatorRemaining.toString()) : null;
 
   // Clamp negatives to zero
-  const effectiveCampRem = campRem.greaterThan(0) ? campRem : zero;
-  const effectiveCreatRem = creatRem.greaterThan(0) ? creatRem : zero;
+  const effectiveCampRem = campRem != null ? (campRem.greaterThan(0) ? campRem : zero) : null;
+  const effectiveCreatRem = creatRem != null ? (creatRem.greaterThan(0) ? creatRem : zero) : null;
 
-  if (raw.lessThanOrEqualTo(0) || effectiveCampRem.lessThanOrEqualTo(0) || effectiveCreatRem.lessThanOrEqualTo(0)) {
+  const campExhausted = effectiveCampRem != null && effectiveCampRem.lessThanOrEqualTo(0);
+  const creatExhausted = effectiveCreatRem != null && effectiveCreatRem.lessThanOrEqualTo(0);
+
+  if (campExhausted || creatExhausted) {
     // Determine which cap was hit
     let cappedBy = null;
-    if (effectiveCampRem.lessThanOrEqualTo(0) && effectiveCreatRem.lessThanOrEqualTo(0)) {
+    if (campExhausted && creatExhausted) {
       cappedBy = 'BOTH';
-    } else if (effectiveCampRem.lessThanOrEqualTo(0)) {
+    } else if (campExhausted) {
       cappedBy = 'CAMPAIGN';
-    } else if (effectiveCreatRem.lessThanOrEqualTo(0)) {
+    } else {
       cappedBy = 'CREATOR';
     }
     return { actualCredit: zero, cappedBy };
   }
 
   // Apply caps using Decimal.min semantics
-  const afterCampaignCap = Prisma.Decimal.min(raw, effectiveCampRem);
-  const actualCredit = Prisma.Decimal.min(afterCampaignCap, effectiveCreatRem);
-
-  actualCredit.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  let actualCredit = raw;
+  if (effectiveCampRem != null) {
+    actualCredit = Prisma.Decimal.min(actualCredit, effectiveCampRem);
+  }
+  if (effectiveCreatRem != null) {
+    actualCredit = Prisma.Decimal.min(actualCredit, effectiveCreatRem);
+  }
 
   // Determine what cap applied
   let cappedBy = null;
   if (actualCredit.lessThan(raw)) {
-    const campaignCapped = effectiveCampRem.lessThan(raw);
-    const creatorCapped = effectiveCreatRem.lessThan(raw);
+    const campaignCapped = effectiveCampRem != null && effectiveCampRem.lessThan(raw);
+    const creatorCapped = effectiveCreatRem != null && effectiveCreatRem.lessThan(raw);
     if (campaignCapped && creatorCapped) {
       cappedBy = effectiveCampRem.lessThan(effectiveCreatRem) ? 'CAMPAIGN' : 'CREATOR';
     } else if (campaignCapped) {

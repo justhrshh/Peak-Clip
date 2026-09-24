@@ -173,20 +173,23 @@ export class EarningsService {
         );
 
         //    b. Creator remaining cap (creatorEarningCap - already earned in this campaign)
-        const creatorEarningCap = new Prisma.Decimal(
-          submission.campaign.creatorEarningCap?.toString() ?? '600.00'
-        );
-
-        let creatorCampaignTotal = new Prisma.Decimal('0.00');
-        if (typeof this.repo.getCreatorCampaignTotal === 'function') {
-          creatorCampaignTotal = await this.repo.getCreatorCampaignTotal(
-            submission.userId,
-            submission.campaignId,
-            tx
+        let creatorRemaining = null;
+        if (submission.campaign.creatorEarningCap != null) {
+          const creatorEarningCap = new Prisma.Decimal(
+            submission.campaign.creatorEarningCap.toString()
           );
-        }
 
-        const creatorRemaining = creatorEarningCap.minus(creatorCampaignTotal);
+          let creatorCampaignTotal = new Prisma.Decimal('0.00');
+          if (typeof this.repo.getCreatorCampaignTotal === 'function') {
+            creatorCampaignTotal = await this.repo.getCreatorCampaignTotal(
+              submission.userId,
+              submission.campaignId,
+              tx
+            );
+          }
+
+          creatorRemaining = creatorEarningCap.minus(creatorCampaignTotal);
+        }
 
         //    c. Compute actualCredit = MIN(rawGrossAmount, campaignRemaining, creatorRemaining)
         const capped = applyBudgetCaps(rawGrossAmount, campaignRemainingBudget, creatorRemaining);

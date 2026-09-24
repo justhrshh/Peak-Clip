@@ -111,7 +111,7 @@ export class SubmissionService {
       retentionRequired: Boolean(campaign.retentionRequired),
       retentionDays: campaign.retentionDays ?? null,
       payRate: campaign.payRate != null ? campaign.payRate.toString() : '0.00',
-      creatorEarningCap: campaign.creatorEarningCap != null ? campaign.creatorEarningCap.toString() : '600.00',
+      creatorEarningCap: campaign.creatorEarningCap != null ? campaign.creatorEarningCap.toString() : null,
       capturedAt: new Date().toISOString()
     };
 
