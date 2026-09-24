@@ -46,6 +46,9 @@ const configSchema = z.object({
   // Submission Window Policy
   SUBMISSION_WINDOW_HOURS: z.coerce.number().min(0.1).default(1),
 
+  // Retention & Deletion Penalty Policy (IMP-07)
+  RETENTION_DELETION_STRIKES_REQUIRED: z.coerce.number().min(1).default(3),
+
   // Rate Limiting
   RATE_LIMIT_SUBMIT_PER_MINUTE: z.coerce.number().min(1).default(10),
   RATE_LIMIT_PAYOUT_PER_MINUTE: z.coerce.number().min(1).default(5),
@@ -172,6 +175,9 @@ function loadConfig() {
       enabled: config.METRIC_POLL_ENABLED
     },
     submissionWindowHours: config.SUBMISSION_WINDOW_HOURS,
+    retention: {
+      deletionStrikesRequired: config.RETENTION_DELETION_STRIKES_REQUIRED
+    },
     rateLimits: {
       submitPerMinute: config.RATE_LIMIT_SUBMIT_PER_MINUTE,
       payoutPerMinute: config.RATE_LIMIT_PAYOUT_PER_MINUTE

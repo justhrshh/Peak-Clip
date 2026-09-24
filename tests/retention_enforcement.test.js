@@ -11,7 +11,8 @@ import {
 } from '../src/modules/payouts/payout.errors.js';
 import {
   PermanentContentError,
-  TransientProviderError
+  TransientProviderError,
+  ConfigurationAuthError
 } from '../src/modules/verification/verification.errors.js';
 import { RESERVING_PAYOUT_STATUSES } from '../src/modules/payouts/payout.state-machine.js';
 
@@ -386,7 +387,8 @@ describe('PHASE 10C — RETENTION ENFORCEMENT & PAYOUT CANCELLATION', () => {
         env.db,
         env.adjustmentService,
         env.mockAuditRepo,
-        () => mockProvider
+        () => mockProvider,
+        { deletionStrikes: 1 }
       );
 
       // Check on day 15 (before deadline)
@@ -508,7 +510,8 @@ describe('PHASE 10C — RETENTION ENFORCEMENT & PAYOUT CANCELLATION', () => {
         env.db,
         env.adjustmentService,
         env.mockAuditRepo,
-        () => mockProvider
+        () => mockProvider,
+        { deletionStrikes: 1 }
       );
 
       // Run 1: Transitions to VIOLATED and creates 1 adjustment
@@ -521,6 +524,119 @@ describe('PHASE 10C — RETENTION ENFORCEMENT & PAYOUT CANCELLATION', () => {
       assert.equal(res2.status, 'VIOLATED');
       assert.equal(res2.alreadyTerminal, true);
       assert.equal(env.adjustments.size, 1); // Exact same count
+    });
+
+    test('IMP-07: requires N consecutive failures before violation; transient errors do not increment; success resets strikes', async () => {
+      const env = createTestEnvironment();
+      const approvedAt = new Date('2026-01-01T00:00:00Z');
+      const deadline = new Date('2026-01-31T00:00:00Z');
+
+      const user = { id: 'usr_strikes', username: 'strike_user', discordId: '99999' };
+      const campaign = { id: 'cmp_strikes', name: 'Strike Campaign', retentionDays: 30 };
+      const sub = {
+        id: 'sub_strikes',
+        userId: user.id,
+        campaignId: campaign.id,
+        platform: 'YOUTUBE',
+        url: 'https://youtube.com/watch?v=dur00000030',
+        retentionRequired: true,
+        retentionStatus: 'ACTIVE',
+        approvedAt,
+        retentionDeadline: deadline
+      };
+      const earning = {
+        id: 'earn_strikes',
+        userId: user.id,
+        campaignId: campaign.id,
+        submissionId: sub.id,
+        grossAmount: new Prisma.Decimal('50.00'),
+        status: 'ELIGIBLE',
+        currency: 'USD',
+        eligibleViews: 10000n
+      };
+
+      env.users.set(user.id, user);
+      env.campaigns.set(campaign.id, campaign);
+      env.submissions.set(sub.id, sub);
+      env.earnings.set(earning.id, earning);
+
+      let providerBehavior = 'NOT_FOUND';
+      const mockProvider = {
+        async getAvailability() {
+          if (providerBehavior === 'NOT_FOUND') {
+            throw new PermanentContentError('Video not found (404)');
+          } else if (providerBehavior === 'TRANSIENT') {
+            throw new TransientProviderError('Network timeout');
+          } else if (providerBehavior === 'AUTH_ERROR') {
+            throw new ConfigurationAuthError('Invalid API token');
+          } else if (providerBehavior === 'DATA_UNAVAILABLE') {
+            return { isAvailable: true, status: 'DATA_UNAVAILABLE', reason: 'Scraper rate limited' };
+          } else if (providerBehavior === 'LIVE') {
+            return { isAvailable: true, status: 'AVAILABLE' };
+          }
+          return { isAvailable: false, status: 'UNAVAILABLE' };
+        }
+      };
+
+      const retentionService = new RetentionService(
+        env.db,
+        env.adjustmentService,
+        env.mockAuditRepo,
+        () => mockProvider,
+        { deletionStrikes: 3 }
+      );
+
+      const testNow = { now: new Date('2026-01-15T00:00:00Z') };
+
+      // Check 1: 404 -> strike 1 (remains ACTIVE)
+      const res1 = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(res1.status, 'ACTIVE');
+      assert.equal(res1.strikes, 1);
+      assert.equal(await retentionService.getStrikes(sub.id), 1);
+      assert.equal(env.submissions.get(sub.id).retentionStatus, 'ACTIVE');
+
+      // Check 2: Transient network error -> throws, strike remains 1 (NOT incremented)
+      providerBehavior = 'TRANSIENT';
+      await assert.rejects(() => retentionService.checkSubmissionRetention(sub.id, testNow), TransientProviderError);
+      assert.equal(await retentionService.getStrikes(sub.id), 1);
+
+      // Check 3: Scraper auth error -> does NOT increment strike
+      providerBehavior = 'AUTH_ERROR';
+      const resAuth = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(resAuth.status, 'ACTIVE');
+      assert.equal(await retentionService.getStrikes(sub.id), 1);
+
+      // Check 4: DATA_UNAVAILABLE -> does NOT increment strike
+      providerBehavior = 'DATA_UNAVAILABLE';
+      const resDataUnavail = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(resDataUnavail.status, 'ACTIVE');
+      assert.equal(await retentionService.getStrikes(sub.id), 1);
+
+      // Check 5: Success (LIVE) -> RESETS strike counter to 0
+      providerBehavior = 'LIVE';
+      const resLive = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(resLive.status, 'ACTIVE');
+      assert.equal(await retentionService.getStrikes(sub.id), 0);
+
+      // Check 6: Strike 1 of 3 after reset -> remains ACTIVE
+      providerBehavior = 'NOT_FOUND';
+      const r1 = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(r1.status, 'ACTIVE');
+      assert.equal(r1.strikes, 1);
+      assert.equal(await retentionService.getStrikes(sub.id), 1);
+
+      // Check 7: Strike 2 of 3 -> remains ACTIVE
+      const r2 = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(r2.status, 'ACTIVE');
+      assert.equal(r2.strikes, 2);
+      assert.equal(await retentionService.getStrikes(sub.id), 2);
+
+      // Check 8: Strike 3 of 3 -> REACHES THRESHOLD -> VIOLATED!
+      const r3 = await retentionService.checkSubmissionRetention(sub.id, testNow);
+      assert.equal(r3.status, 'VIOLATED');
+      assert.equal(env.submissions.get(sub.id).retentionStatus, 'VIOLATED');
+      assert.equal(await retentionService.getStrikes(sub.id), 0); // Reset upon violation
+      assert.equal(env.adjustments.size, 1); // Financial penalty applied
     });
   });
 

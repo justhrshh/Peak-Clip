@@ -10,6 +10,7 @@ import {
   TransientProviderError,
   ConfigurationAuthError
 } from '../verification/verification.errors.js';
+import { config } from '../../config/index.js';
 import { logger } from '../../utils/logger.js';
 
 export class RetentionService {
@@ -17,12 +18,74 @@ export class RetentionService {
     dbClient = prisma,
     adjustmentService = defaultAdjustmentService,
     auditRepo = new AdminAuditRepository(dbClient),
-    providerResolver = getPlatformProvider
+    providerResolver = getPlatformProvider,
+    options = {}
   ) {
     this.prisma = dbClient;
     this.adjustmentService = adjustmentService;
     this.auditRepo = auditRepo;
     this.providerResolver = providerResolver;
+    this.options = options;
+    this._inMemoryStrikes = new Map();
+  }
+
+  /**
+   * Get consecutive failure strike count for a submission
+   * @param {string} submissionId
+   * @returns {Promise<number>}
+   */
+  async getStrikes(submissionId) {
+    if (this.prisma?.systemSetting?.findUnique) {
+      try {
+        const row = await this.prisma.systemSetting.findUnique({
+          where: { key: `retention_strikes:${submissionId}` }
+        });
+        if (row?.value) {
+          const count = parseInt(row.value, 10);
+          return isNaN(count) ? 0 : count;
+        }
+      } catch (err) {
+        logger.warn({ submissionId, err: err.message }, 'Failed to read retention strikes from systemSetting');
+      }
+    }
+    return this._inMemoryStrikes.get(submissionId) || 0;
+  }
+
+  /**
+   * Record consecutive failure strike count
+   * @param {string} submissionId
+   * @param {number} strikes
+   */
+  async _setStrikes(submissionId, strikes) {
+    this._inMemoryStrikes.set(submissionId, strikes);
+    if (this.prisma?.systemSetting?.upsert) {
+      try {
+        await this.prisma.systemSetting.upsert({
+          where: { key: `retention_strikes:${submissionId}` },
+          create: { key: `retention_strikes:${submissionId}`, value: String(strikes) },
+          update: { value: String(strikes) }
+        });
+      } catch (err) {
+        logger.warn({ submissionId, err: err.message }, 'Failed to persist retention strikes to systemSetting');
+      }
+    }
+  }
+
+  /**
+   * Reset consecutive failure strike count
+   * @param {string} submissionId
+   */
+  async _resetStrikes(submissionId) {
+    this._inMemoryStrikes.delete(submissionId);
+    if (this.prisma?.systemSetting?.delete) {
+      try {
+        await this.prisma.systemSetting.delete({
+          where: { key: `retention_strikes:${submissionId}` }
+        }).catch(() => {});
+      } catch (err) {
+        // Ignore deletion errors
+      }
+    }
   }
 
   /**
@@ -80,6 +143,8 @@ export class RetentionService {
       return { status: submission.retentionStatus };
     }
 
+    const requiredStrikes = options.deletionStrikes ?? options.requiredStrikes ?? this.options?.deletionStrikes ?? config?.retention?.deletionStrikesRequired ?? 3;
+
     // 3. Resolve platform provider and video identity
     const provider = this.providerResolver(submission.platform);
     const parsed = parseAndNormalizeUrl(submission.url);
@@ -92,16 +157,42 @@ export class RetentionService {
       // 4A. Permanent deletion or private video detected
       if (err instanceof PermanentContentError) {
         logger.warn({ submissionId, reason: err.message }, 'Video definitively unavailable/deleted during retention check');
-        return this._transitionToViolated(submission, err.message, now);
+        const currentStrikes = (await this.getStrikes(submissionId)) + 1;
+        await this._setStrikes(submissionId, currentStrikes);
+
+        if (currentStrikes >= requiredStrikes) {
+          await this._resetStrikes(submissionId);
+          return this._transitionToViolated(submission, err.message, now);
+        }
+
+        logger.warn(
+          { submissionId, currentStrikes, requiredStrikes },
+          `Retention strike recorded (${currentStrikes}/${requiredStrikes}); penalty deferred until threshold reached`
+        );
+
+        await this.prisma.submission.update({
+          where: { id: submissionId },
+          data: {
+            lastAvailabilityStatus: 'UNAVAILABLE'
+          }
+        });
+
+        return {
+          status: 'ACTIVE',
+          retentionStatus: 'ACTIVE',
+          strikes: currentStrikes,
+          requiredStrikes,
+          reason: err.message
+        };
       }
 
-      // 4B. Transient error -> re-throw to allow BullMQ retry/backoff
+      // 4B. Transient error -> re-throw to allow BullMQ retry/backoff (no strike recorded)
       if (err instanceof TransientProviderError) {
         logger.warn({ submissionId, err: err.message }, 'Transient error during retention check; will retry');
         throw err;
       }
 
-      // 4C. Configuration or auth error -> do not penalize creator
+      // 4C. Configuration or auth error -> do not penalize creator (no strike recorded)
       if (err instanceof ConfigurationAuthError) {
         logger.error({ submissionId, err: err.message }, 'Provider configuration error during retention check');
         await this.prisma.submission.update({
@@ -117,7 +208,7 @@ export class RetentionService {
     }
 
     // 5. Handle provider availability response
-    // 5A. Boundary providers returning DATA_UNAVAILABLE: NEVER treat as deletion
+    // 5A. Boundary providers returning DATA_UNAVAILABLE: NEVER treat as deletion (no strike recorded)
     if (availabilityRes.status === 'DATA_UNAVAILABLE') {
       logger.info({ submissionId, platform: submission.platform }, 'Platform metrics/availability DATA_UNAVAILABLE; maintaining ACTIVE status');
       await this.prisma.submission.update({
@@ -132,10 +223,37 @@ export class RetentionService {
     // 5B. Content definitively unavailable
     if (availabilityRes.isAvailable === false || availabilityRes.status === 'UNAVAILABLE') {
       const reason = availabilityRes.reason || 'Video unavailable/deleted before retention deadline';
-      return this._transitionToViolated(submission, reason, now);
+      const currentStrikes = (await this.getStrikes(submissionId)) + 1;
+      await this._setStrikes(submissionId, currentStrikes);
+
+      if (currentStrikes >= requiredStrikes) {
+        await this._resetStrikes(submissionId);
+        return this._transitionToViolated(submission, reason, now);
+      }
+
+      logger.warn(
+        { submissionId, currentStrikes, requiredStrikes },
+        `Retention strike recorded (${currentStrikes}/${requiredStrikes}); penalty deferred until threshold reached`
+      );
+
+      await this.prisma.submission.update({
+        where: { id: submissionId },
+        data: {
+          lastAvailabilityStatus: 'UNAVAILABLE'
+        }
+      });
+
+      return {
+        status: 'ACTIVE',
+        retentionStatus: 'ACTIVE',
+        strikes: currentStrikes,
+        requiredStrikes,
+        reason
+      };
     }
 
-    // 5C. Content is LIVE and available
+    // 5C. Content is LIVE and available: reset strikes to 0
+    await this._resetStrikes(submissionId);
     const deadline = submission.retentionDeadline ? new Date(submission.retentionDeadline) : null;
     const isDeadlineReached = deadline && now.getTime() >= deadline.getTime();
 
