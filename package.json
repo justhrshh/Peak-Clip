@@ -1,0 +1,48 @@
+{
+  "name": "dc-clipping-bot",
+  "version": "0.1.0",
+  "description": "Production-grade Discord clipping agency platform",
+  "main": "src/app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "node src/scripts/seed-campaigns.js",
+    "db:studio": "prisma studio",
+    "discord:deploy": "node src/scripts/deploy-commands.js",
+    "test": "node --test tests/*.test.js tests/**/*.test.js",
+    "test:integration": "node --test tests/integration/*.test.js"
+  },
+  "keywords": [
+    "discord",
+    "clipping",
+    "bot",
+    "bullmq",
+    "prisma",
+    "postgresql",
+    "redis"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "apify-client": "^2.25.0",
+    "bullmq": "^5.26.2",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

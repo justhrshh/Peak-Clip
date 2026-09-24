@@ -1,0 +1,577 @@
+// Prisma configuration for PostgreSQL database
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Foundational system settings / metadata table for platform configuration
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// User status lifecycle
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+// Discord user representation in the clipping platform
+model User {
+  id          String     @id @default(uuid())
+  discordId   String     @unique @map("discord_id")
+  username    String
+  displayName String?    @map("display_name")
+  avatarUrl   String?    @map("avatar_url")
+  status      UserStatus @default(ACTIVE)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  lastSeenAt  DateTime   @default(now()) @map("last_seen_at")
+
+  campaignMemberships CampaignMember[]
+  submissions         Submission[]
+  earnings            Earning[]
+  payoutRequests      PayoutRequest[]
+  financialAdjustments FinancialAdjustment[]
+  payoutProfile        PayoutProfile?
+  payoutProfileAudits  PayoutProfileAudit[]
+  payoutEvidence       PayoutEvidence[]
+
+  @@map("users")
+}
+
+// Campaign lifecycle status
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ENDED
+  ARCHIVED
+}
+
+// Supported social video clipping platforms
+enum Platform {
+  YOUTUBE
+  TIKTOK
+  INSTAGRAM
+  FACEBOOK
+}
+
+// Submission review & verification lifecycle
+enum SubmissionStatus {
+  PENDING_VERIFICATION
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  FLAGGED
+  POST_APPROVAL_REVIEW
+}
+
+// Clipping campaign definition
+model Campaign {
+  id                    String         @id @default(uuid())
+  name                  String
+  slug                  String         @unique
+  description           String         @db.Text
+  clientName            String         @map("client_name")
+  status                CampaignStatus @default(DRAFT)
+  payRate               Decimal        @map("pay_rate") @db.Decimal(10, 2)
+  minimumPayout         Decimal        @map("minimum_payout") @db.Decimal(10, 2)
+  // --- Phase 10A: Budget & Fulfillment Engine ---
+  totalBudget           Decimal        @map("total_budget") @db.Decimal(14, 2)
+  consumedBudget        Decimal        @default(0) @map("consumed_budget") @db.Decimal(14, 2)
+  creatorEarningCap     Decimal        @default(600.00) @map("creator_earning_cap") @db.Decimal(14, 2)
+  // --- Phase 10A: Clip Duration Policy ---
+  minClipDurationSeconds Int           @default(7) @map("min_clip_duration_seconds")
+  maxClipDurationSeconds Int           @default(120) @map("max_clip_duration_seconds")
+  // --- Phase 10A: Retention Policy ---
+  retentionRequired     Boolean        @default(false) @map("retention_required")
+  retentionDays         Int?           @map("retention_days")
+  // --- End Phase 10A additions ---
+  currency              String         @default("USD") @db.VarChar(3)
+  startsAt              DateTime       @map("starts_at")
+  endsAt                DateTime       @map("ends_at")
+  requirements          Json           @default("{}")
+  createdAt             DateTime       @default(now()) @map("created_at")
+  updatedAt             DateTime       @updatedAt @map("updated_at")
+
+  members     CampaignMember[]
+  submissions Submission[]
+  earnings    Earning[]
+  financialAdjustments FinancialAdjustment[]
+
+  @@index([status, consumedBudget])
+  @@map("campaigns")
+}
+
+// Membership status within a campaign
+enum CampaignMemberStatus {
+  ACTIVE
+  LEFT
+  REMOVED
+}
+
+// Explicit representation of a user joining a campaign
+model CampaignMember {
+  id         String               @id @default(uuid())
+  userId     String               @map("user_id")
+  campaignId String               @map("campaign_id")
+  status     CampaignMemberStatus @default(ACTIVE)
+  joinedAt   DateTime             @default(now()) @map("joined_at")
+  updatedAt  DateTime             @updatedAt @map("updated_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, campaignId])
+  @@map("campaign_members")
+}
+
+// Retention policy lifecycle for approved submissions
+enum RetentionStatus {
+  NOT_REQUIRED
+  PENDING_CHECK
+  ACTIVE
+  FULFILLED
+  VIOLATED
+}
+
+// User-submitted video/clip URL for a specific campaign
+model Submission {
+  id              String           @id @default(uuid())
+  userId          String           @map("user_id")
+  campaignId      String           @map("campaign_id")
+  platform        Platform
+  url             String           @db.Text
+  normalizedUrl   String           @map("normalized_url") @db.Text
+  status          SubmissionStatus @default(PENDING_VERIFICATION)
+  submittedAt     DateTime         @default(now()) @map("submitted_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  verifiedAt      DateTime?        @map("verified_at")
+  rejectionReason String?          @map("rejection_reason") @db.Text
+
+  // --- Phase 10B: Requirements Snapshot ---
+  requirementsSnapshot Json?       @map("requirements_snapshot")
+
+  // --- Phase 10B: Duration Verification ---
+  durationSeconds      Int?        @map("duration_seconds")
+  durationStatus       String      @default("PENDING_CHECK") @map("duration_status") @db.VarChar(30)
+
+  // --- Phase 10B: Retention Policy State ---
+  retentionStatus      RetentionStatus @default(NOT_REQUIRED) @map("retention_status")
+  retentionRequired    Boolean     @default(false) @map("retention_required")
+  retentionDays        Int?        @map("retention_days")
+  approvedAt           DateTime?   @map("approved_at")
+  retentionDeadline    DateTime?   @map("retention_deadline")
+  retentionViolatedAt  DateTime?   @map("retention_violated_at")
+  retentionViolationReason String? @map("retention_violation_reason") @db.Text
+
+  // --- Phase 10B: Video Availability Monitoring Boundary ---
+  lastAvailabilityStatus String?   @map("last_availability_status") @db.VarChar(30)
+  // --- Phase 10D: Moderation & Audit Tracking ---
+  moderatedAt          DateTime?   @map("moderated_at")
+  moderatedBy          String?     @map("moderated_by")
+  moderationNotes      String?     @map("moderation_notes") @db.Text
+  structuredReason     String?     @map("structured_reason") @db.VarChar(50)
+
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign      Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  snapshots     MetricSnapshot[]
+  verifications Verification[]
+  earnings      Earning[]
+  financialAdjustments FinancialAdjustment[]
+  moderationHistory    SubmissionModerationHistory[]
+
+  // Enforce duplicate protection per user, campaign, and normalized URL
+  @@unique([userId, campaignId, normalizedUrl])
+  @@index([retentionStatus, retentionDeadline])
+  @@map("submissions")
+}
+
+// Immutable verification & moderation audit history (Phase 10D)
+model SubmissionModerationHistory {
+  id             String           @id @default(uuid())
+  submissionId   String           @map("submission_id")
+  action         String           @db.VarChar(50)
+  previousStatus SubmissionStatus @map("previous_status")
+  newStatus      SubmissionStatus @map("new_status")
+  actorUserId    String?          @map("actor_user_id")
+  actorDiscordId String           @default("SYSTEM") @map("actor_discord_id")
+  actorType      String           @default("SYSTEM") @map("actor_type")
+  reason         String?          @db.Text
+  notes          String?          @db.Text
+  verificationId String?          @map("verification_id")
+  evidence       Json?
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("submission_moderation_history")
+}
+
+// Periodic engagement metric snapshot
+model MetricSnapshot {
+  id           String   @id @default(uuid())
+  submissionId String   @map("submission_id")
+  views        BigInt?
+  likes        BigInt?
+  comments     BigInt?
+  shares       BigInt?
+  capturedAt   DateTime @default(now()) @map("captured_at")
+  source       String   @default("PROVIDER")
+  metadata     Json?
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  earning    Earning?
+
+  @@index([submissionId, capturedAt])
+  @@map("metric_snapshots")
+}
+
+// Verification workflow status
+enum VerificationStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+// Evidence-based integrity assessment
+enum RiskLevel {
+  LOW_RISK
+  REVIEW_REQUIRED
+  HIGH_RISK
+}
+
+// Verification record for a submission
+model Verification {
+  id           String             @id @default(uuid())
+  submissionId String             @map("submission_id")
+  status       VerificationStatus @default(PENDING)
+  riskLevel    RiskLevel          @default(LOW_RISK) @map("risk_level")
+  score        Float? // Normalized risk score between 0.0 (clean) and 1.0 (elevated anomaly signals)
+  startedAt    DateTime?          @map("started_at")
+  completedAt  DateTime?          @map("completed_at")
+  lastError    String?            @map("last_error") @db.Text
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  submission Submission           @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  signals    VerificationSignal[]
+
+  @@map("verifications")
+}
+
+// Signal severity levels
+enum SignalSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// Observable engagement and platform signals
+enum SignalType {
+  VIEW_VELOCITY_CHANGE
+  LIKE_VIEW_RATIO
+  COMMENT_VIEW_RATIO
+  SHARE_VIEW_RATIO
+  ENGAGEMENT_CHANGE
+  SUDDEN_GROWTH
+  METRIC_INCONSISTENCY
+  DATA_UNAVAILABLE
+  PLATFORM_ANOMALY
+}
+
+// Individual verification signal detected during integrity analysis
+model VerificationSignal {
+  id             String         @id @default(uuid())
+  verificationId String         @map("verification_id")
+  type           SignalType
+  severity       SignalSeverity
+  value          Json
+  explanation    String         @db.Text
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  verification Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@map("verification_signals")
+}
+
+// Financial earning status lifecycle
+enum EarningStatus {
+  PENDING
+  ELIGIBLE
+  VOIDED
+}
+
+// Immutable financial earning ledger
+model Earning {
+  id               String        @id @default(uuid())
+  userId           String        @map("user_id")
+  campaignId       String        @map("campaign_id")
+  submissionId     String        @map("submission_id")
+  sourceSnapshotId String        @unique @map("source_snapshot_id")
+  eligibleViews    BigInt        @map("eligible_views")
+  ratePerThousand  Decimal       @map("rate_per_thousand") @db.Decimal(10, 2)
+  grossAmount      Decimal       @map("gross_amount") @db.Decimal(10, 2)
+  currency         String        @default("USD") @db.VarChar(3)
+  status           EarningStatus @default(ELIGIBLE)
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign       Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  submission     Submission     @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  sourceSnapshot MetricSnapshot @relation(fields: [sourceSnapshotId], references: [id], onDelete: Cascade)
+  financialAdjustments FinancialAdjustment[]
+
+  @@index([userId, status])
+  @@index([userId, campaignId])
+  @@index([submissionId])
+  @@index([campaignId])
+  @@map("earnings")
+}
+
+// Payout request lifecycle status
+enum PayoutStatus {
+  REQUESTED
+  UNDER_REVIEW
+  APPROVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  REJECTED
+  CANCELLED
+}
+
+// Disbursement attempt lifecycle status
+enum DisbursementStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// Immutable audit event types for payout lifecycle
+enum PayoutEventType {
+  REQUESTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// Tracked creator payout request
+model PayoutRequest {
+  id                 String       @id @default(uuid())
+  userId             String       @map("user_id")
+  amount             Decimal      @db.Decimal(10, 2)
+  currency           String       @default("USD") @db.VarChar(3)
+  status             PayoutStatus @default(REQUESTED)
+  profileSnapshot    Json?        @map("profile_snapshot")
+  requestedAt        DateTime     @default(now()) @map("requested_at")
+  reviewedAt         DateTime?    @map("reviewed_at")
+  reviewedBy         String?      @map("reviewed_by")
+  rejectionReason    String?      @map("rejection_reason") @db.Text
+  completedAt        DateTime?    @map("completed_at")
+  failureReason      String?      @map("failure_reason") @db.Text
+  cancelledAt        DateTime?    @map("cancelled_at")
+  cancelledBy        String?      @map("cancelled_by")
+  cancellationReason String?      @map("cancellation_reason") @db.Text
+  processingAt       DateTime?    @map("processing_at")
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  disbursements Disbursement[]
+  events        PayoutEvent[]
+  evidence      PayoutEvidence[]
+
+  @@index([userId, status])
+  @@index([status])
+  @@map("payout_requests")
+}
+
+// Explicit, auditable financial adjustments (e.g. retention policy violations)
+model FinancialAdjustment {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  campaignId   String   @map("campaign_id")
+  submissionId String   @map("submission_id")
+  earningId    String?  @map("earning_id")
+  type         String   @default("RETENTION_VIOLATION") @db.VarChar(50)
+  amount       Decimal  @db.Decimal(10, 2)
+  currency     String   @default("USD") @db.VarChar(3)
+  reason       String   @db.Text
+  source       String   @default("SYSTEM_RETENTION_WORKER") @db.VarChar(50)
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign   Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  submission Submission  @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  earning    Earning?    @relation(fields: [earningId], references: [id], onDelete: Cascade)
+
+  @@unique([earningId, type])
+  @@index([userId, currency])
+  @@index([submissionId])
+  @@index([campaignId])
+  @@map("financial_adjustments")
+}
+
+// Tracked disbursement attempt
+model Disbursement {
+  id                String             @id @default(uuid())
+  payoutRequestId   String             @map("payout_request_id")
+  provider          String?            @default("MANUAL") @db.VarChar(50)
+  providerReference String?            @map("provider_reference") @db.VarChar(255)
+  amount            Decimal            @db.Decimal(10, 2)
+  currency          String             @default("USD") @db.VarChar(3)
+  status            DisbursementStatus @default(PENDING)
+  attemptedAt       DateTime?          @map("attempted_at")
+  completedAt       DateTime?          @map("completed_at")
+  failureReason     String?            @map("failure_reason") @db.Text
+  metadata          Json?
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  payoutRequest PayoutRequest @relation(fields: [payoutRequestId], references: [id], onDelete: Cascade)
+
+  @@index([payoutRequestId])
+  @@map("disbursements")
+}
+
+// Immutable audit log of payout lifecycle events
+model PayoutEvent {
+  id              String          @id @default(uuid())
+  payoutRequestId String          @map("payout_request_id")
+  type            PayoutEventType
+  actorUserId     String?         @map("actor_user_id")
+  metadata        Json?
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  payoutRequest PayoutRequest @relation(fields: [payoutRequestId], references: [id], onDelete: Cascade)
+
+  @@index([payoutRequestId])
+  @@map("payout_events")
+}
+
+// Immutable administrative audit log for staff control plane actions
+model AdminAuditEvent {
+  id             String   @id @default(uuid())
+  actorUserId    String?  @map("actor_user_id")
+  actorDiscordId String   @map("actor_discord_id")
+  action         String   @db.VarChar(100)
+  entityType     String   @map("entity_type") @db.VarChar(50)
+  entityId       String   @map("entity_id")
+  previousState  Json?    @map("previous_state")
+  newState       Json?    @map("new_state")
+  reason         String?  @db.Text
+  metadata       Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([actorDiscordId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("admin_audit_events")
+}
+
+// Phase 10E: Persistent Creator Payout Profile
+model PayoutProfile {
+  id             String    @id @default(uuid())
+  userId         String    @unique @map("user_id")
+  walletAddress  String    @map("wallet_address") @db.VarChar(255)
+  network        String    @db.VarChar(50)
+  walletName     String    @map("wallet_name") @db.VarChar(50)
+  creatorHandle  String    @map("creator_handle") @db.VarChar(100)
+  platform       Platform  @default(YOUTUBE)
+  verifiedAt     DateTime? @map("verified_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([network])
+  @@map("payout_profiles")
+}
+
+// Phase 10E: Audit trail for payout profile modifications
+model PayoutProfileAudit {
+  id                   String   @id @default(uuid())
+  userId               String   @map("user_id")
+  action               String   @db.VarChar(50) // CREATE, UPDATE
+  actorUserId          String?  @map("actor_user_id")
+  actorDiscordId       String   @map("actor_discord_id")
+  oldNetwork           String?  @map("old_network") @db.VarChar(50)
+  newNetwork           String?  @map("new_network") @db.VarChar(50)
+  oldWalletName        String?  @map("old_wallet_name") @db.VarChar(50)
+  newWalletName        String?  @map("new_wallet_name") @db.VarChar(50)
+  platform             String?  @db.VarChar(50)
+  walletAddressChanged Boolean  @default(false) @map("wallet_address_changed")
+  metadata             Json?
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("payout_profile_audits")
+}
+
+// Phase 10E: Evidence review lifecycle status
+enum EvidenceStatus {
+  UPLOADED
+  PENDING_REVIEW
+  ACCEPTED
+  REJECTED
+}
+
+// Phase 10E: Payout Evidence submission
+model PayoutEvidence {
+  id              String         @id @default(uuid())
+  payoutRequestId String         @map("payout_request_id")
+  userId          String         @map("user_id")
+  platform        Platform       @default(YOUTUBE)
+  filename        String         @db.VarChar(255)
+  mimeType        String         @map("mime_type") @db.VarChar(100)
+  fileSize        BigInt         @map("file_size")
+  durationSeconds Decimal?       @map("duration_seconds") @db.Decimal(6, 2)
+  storageKey      String         @map("storage_key") @db.Text
+  status          EvidenceStatus @default(PENDING_REVIEW)
+  version         Int            @default(1)
+  reviewedAt      DateTime?      @map("reviewed_at")
+  reviewedBy      String?        @map("reviewed_by")
+  rejectionReason String?        @map("rejection_reason") @db.VarChar(50)
+  notes           String?        @db.Text
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  payoutRequest PayoutRequest @relation(fields: [payoutRequestId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([payoutRequestId])
+  @@index([userId])
+  @@index([status])
+  @@map("payout_evidence")
+}
