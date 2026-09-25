@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Collection, Events } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, Events, Status } from 'discord.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { handleInteraction } from './interactions/router.js';
@@ -73,8 +73,33 @@ export function createDiscordClient() {
   });
 
   // Client error handler
-  client.on('error', (err) => {
-    logger.error({ err: err.message }, 'Discord client connection error');
+  client.on(Events.Error, (err) => {
+    logger.error({ err: err.message, stack: err.stack }, 'Discord client connection error');
+  });
+
+  // Gateway shard diagnostics (detects code 4014 Disallowed Intents and disconnects)
+  client.on(Events.ShardError, (err, shardId) => {
+    logger.error({ err: err.message, stack: err.stack, shardId }, 'Discord gateway shard error');
+  });
+
+  client.on(Events.ShardDisconnect, (event, shardId) => {
+    const isDisallowedIntents = event?.code === 4014;
+    logger.error(
+      {
+        closeCode: event?.code,
+        reason: event?.reason,
+        wasClean: event?.wasClean,
+        shardId,
+        isDisallowedIntents
+      },
+      isDisallowedIntents
+        ? 'Discord Gateway closed connection (Code 4014: Disallowed Intents). Check Privileged Gateway Intents (Message Content) in Discord Developer Portal.'
+        : `Discord Gateway shard ${shardId} disconnected`
+    );
+  });
+
+  client.on(Events.Warn, (info) => {
+    logger.warn({ info }, 'Discord client warning');
   });
 
   return client;
@@ -93,9 +118,10 @@ export function getDiscordClient() {
 
 /**
  * Start and authenticate the Discord bot
+ * @param {number} [timeoutMs=30000] Gateway login timeout in milliseconds
  * @returns {Promise<boolean>}
  */
-export async function startDiscordBot() {
+export async function startDiscordBot(timeoutMs = 30000) {
   const client = getDiscordClient();
 
   if (!config.discord.token) {
@@ -106,16 +132,42 @@ export async function startDiscordBot() {
     throw new Error('DISCORD_TOKEN is required in production.');
   }
 
+  let timeoutHandle = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      const wsStatus = client.ws?.status;
+      const statusName = Status[wsStatus] ?? 'Unknown';
+      const timeoutError = new Error(
+        `Discord Gateway authentication timed out after ${timeoutMs / 1000}s. ` +
+        `Client WS status: ${wsStatus} (${statusName}). ` +
+        `Verify DISCORD_TOKEN and ensure required Privileged Gateway Intents (Message Content) are enabled in the Discord Developer Portal.`
+      );
+      timeoutError.code = 'DISCORD_LOGIN_TIMEOUT';
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
   try {
-    logger.info('Authenticating with Discord Gateway...');
-    await client.login(config.discord.token);
+    logger.info({ timeoutMs }, 'Authenticating with Discord Gateway...');
+    await Promise.race([client.login(config.discord.token), timeoutPromise]);
     return true;
   } catch (error) {
-    logger.error({ err: error.message }, 'Failed to login to Discord');
-    if (config.isProduction) {
-      throw error;
+    const wsStatus = client.ws?.status;
+    const statusName = Status[wsStatus] ?? 'Unknown';
+    logger.fatal(
+      {
+        err: error.message,
+        code: error.code,
+        wsStatus,
+        wsStatusName: statusName
+      },
+      'Failed to authenticate with Discord Gateway'
+    );
+    throw error;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
     }
-    return false;
   }
 }
 

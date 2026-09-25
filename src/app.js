@@ -48,7 +48,17 @@ export async function bootstrap() {
   }
 
   // 5. Start Discord Bot
-  await startDiscordBot();
+  try {
+    await startDiscordBot();
+  } catch (error) {
+    logger.fatal(
+      { err: formatError(error) },
+      'Fatal: Discord bot failed to authenticate with gateway. Aborting.'
+    );
+    if (config.isProduction) {
+      process.exit(1);
+    }
+  }
 
   logger.info('Platform foundation initialized successfully.');
 }

@@ -2,10 +2,11 @@ import net from 'node:net';
 import http from 'node:http';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { GatewayIntentBits } from 'discord.js';
 import { config } from '../src/config/index.js';
 import { getPrismaClient } from '../src/database/client.js';
 import { QUEUE_NAMES } from '../src/queues/index.js';
-import { createDiscordClient } from '../src/bot/client.js';
+import { createDiscordClient, startDiscordBot, getDiscordClient, stopDiscordBot } from '../src/bot/client.js';
 import { AppError, DatabaseError, ProviderError } from '../src/utils/errors.js';
 import { startHealthServer, stopHealthServer, resolveHealthPort, getHealthServer } from '../src/server/health.js';
 import { bootstrap, shutdown } from '../src/app.js';
@@ -167,6 +168,42 @@ test('startHealthServer rejects with fatal error when port is already in use', a
     await stopHealthServer();
   }
 });
+
+test('createDiscordClient requests expected gateway intents including MessageContent', () => {
+  const client = createDiscordClient();
+  assert.ok(client);
+  const intentsBitfield = BigInt(client.options.intents.bitfield);
+  const messageContentBit = BigInt(GatewayIntentBits.MessageContent);
+  assert.equal((intentsBitfield & messageContentBit) === messageContentBit, true);
+});
+
+test('startDiscordBot enforces explicit timeout if gateway login hangs', async () => {
+  const client = getDiscordClient();
+  const origLogin = client.login;
+  // Mock client.login to hang indefinitely
+  client.login = () => new Promise(() => {});
+
+  const origToken = config.discord.token;
+  config.discord.token = 'mock_token_for_timeout_test';
+
+  try {
+    await assert.rejects(
+      async () => {
+        await startDiscordBot(150); // 150ms timeout
+      },
+      (err) => {
+        assert.equal(err.code, 'DISCORD_LOGIN_TIMEOUT');
+        assert.match(err.message, /timed out after 0\.15s/);
+        return true;
+      }
+    );
+  } finally {
+    client.login = origLogin;
+    config.discord.token = origToken;
+    await stopDiscordBot();
+  }
+});
+
 
 
 
