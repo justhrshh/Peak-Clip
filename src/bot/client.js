@@ -102,7 +102,60 @@ export function createDiscordClient() {
     logger.warn({ info }, 'Discord client warning');
   });
 
+  // Client internal debug logging (gateway connect, shard transitions, session limits)
+  client.on(Events.Debug, (message) => {
+    logger.debug({ gatewayDebug: message }, 'Discord gateway debug notice');
+  });
+
   return client;
+}
+
+/**
+ * Perform a raw, unauthenticated HTTPS reachability check to Discord's public gateway API
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<{ reachable: boolean, status?: number, latencyMs?: number, gatewayUrl?: string, err?: string }>}
+ */
+export async function checkDiscordApiReachability(timeoutMs = 5000) {
+  const startTime = Date.now();
+  try {
+    const res = await fetch('https://discord.com/api/v10/gateway', {
+      headers: { 'User-Agent': 'DiscordBot (dc-clipping-bot, 0.1.0)' },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    const latencyMs = Date.now() - startTime;
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      // ignore JSON parse failures
+    }
+
+    const result = {
+      reachable: res.ok,
+      status: res.status,
+      latencyMs,
+      gatewayUrl: data?.url ?? null
+    };
+
+    logger.info(
+      result,
+      `Discord API reachability check: ${res.ok ? 'REACHABLE' : 'UNEXPECTED_STATUS'} (HTTP ${res.status}, ${latencyMs}ms)`
+    );
+    return result;
+  } catch (error) {
+    const latencyMs = Date.now() - startTime;
+    const result = {
+      reachable: false,
+      latencyMs,
+      err: error.message,
+      code: error.code || error.name
+    };
+    logger.error(
+      result,
+      `Discord API reachability check: FAILED to reach https://discord.com/api/v10/gateway (${error.message})`
+    );
+    return result;
+  }
 }
 
 /**
@@ -132,14 +185,43 @@ export async function startDiscordBot(timeoutMs = 30000) {
     throw new Error('DISCORD_TOKEN is required in production.');
   }
 
+  // 1. Raw network reachability check against public Discord API
+  await checkDiscordApiReachability(5000);
+
+  // 2. Pre-login low-level state diagnostics
+  const wsStatus = client.ws?.status;
+  const wsStatusName = Status[wsStatus] ?? 'Unknown';
+  const shardCount = client.ws?.shards?.size ?? 0;
+  const restHandlersCount = client.rest?.handlers?.size ?? 0;
+  const globalRemaining = client.rest?.globalRemaining ?? null;
+  const globalReset = client.rest?.globalReset ?? null;
+  const rawToken = config.discord.token ?? '';
+  const tokenLength = typeof rawToken === 'string' ? rawToken.trim().length : 0;
+  const tokenPresent = tokenLength > 0;
+
+  logger.info(
+    {
+      tokenPresent,
+      tokenLength,
+      wsStatus,
+      wsStatusName,
+      shardCount,
+      restHandlersCount,
+      globalRemaining,
+      globalReset,
+      timeoutMs
+    },
+    `Pre-login Discord client diagnostics (tokenLength: ${tokenLength}, wsStatus: ${wsStatus}/${wsStatusName}, shards: ${shardCount})`
+  );
+
   let timeoutHandle = null;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutHandle = setTimeout(() => {
-      const wsStatus = client.ws?.status;
-      const statusName = Status[wsStatus] ?? 'Unknown';
+      const currentWsStatus = client.ws?.status;
+      const currentStatusName = Status[currentWsStatus] ?? 'Unknown';
       const timeoutError = new Error(
         `Discord Gateway authentication timed out after ${timeoutMs / 1000}s. ` +
-        `Client WS status: ${wsStatus} (${statusName}). ` +
+        `Client WS status: ${currentWsStatus} (${currentStatusName}). ` +
         `Verify DISCORD_TOKEN and ensure required Privileged Gateway Intents (Message Content) are enabled in the Discord Developer Portal.`
       );
       timeoutError.code = 'DISCORD_LOGIN_TIMEOUT';
@@ -152,14 +234,14 @@ export async function startDiscordBot(timeoutMs = 30000) {
     await Promise.race([client.login(config.discord.token), timeoutPromise]);
     return true;
   } catch (error) {
-    const wsStatus = client.ws?.status;
-    const statusName = Status[wsStatus] ?? 'Unknown';
+    const finalWsStatus = client.ws?.status;
+    const finalStatusName = Status[finalWsStatus] ?? 'Unknown';
     logger.fatal(
       {
         err: error.message,
         code: error.code,
-        wsStatus,
-        wsStatusName: statusName
+        wsStatus: finalWsStatus,
+        wsStatusName: finalStatusName
       },
       'Failed to authenticate with Discord Gateway'
     );

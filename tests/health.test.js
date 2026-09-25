@@ -6,7 +6,7 @@ import { GatewayIntentBits } from 'discord.js';
 import { config } from '../src/config/index.js';
 import { getPrismaClient } from '../src/database/client.js';
 import { QUEUE_NAMES } from '../src/queues/index.js';
-import { createDiscordClient, startDiscordBot, getDiscordClient, stopDiscordBot } from '../src/bot/client.js';
+import { createDiscordClient, startDiscordBot, getDiscordClient, stopDiscordBot, checkDiscordApiReachability } from '../src/bot/client.js';
 import { AppError, DatabaseError, ProviderError } from '../src/utils/errors.js';
 import { startHealthServer, stopHealthServer, resolveHealthPort, getHealthServer } from '../src/server/health.js';
 import { bootstrap, shutdown } from '../src/app.js';
@@ -203,6 +203,18 @@ test('startDiscordBot enforces explicit timeout if gateway login hangs', async (
     await stopDiscordBot();
   }
 });
+
+test('checkDiscordApiReachability returns structured diagnostic report for public gateway', async () => {
+  const result = await checkDiscordApiReachability(5000);
+  assert.ok(result);
+  assert.equal(typeof result.reachable, 'boolean');
+  assert.equal(typeof result.latencyMs, 'number');
+  if (result.reachable) {
+    assert.equal(result.status, 200);
+    assert.match(result.gatewayUrl, /^wss:\/\/gateway\.discord\.gg/);
+  }
+});
+
 
 
 
