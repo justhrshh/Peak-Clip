@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Collection, Events, Status } from 'discord.js';
+import { Client, GatewayIntentBits, Collection, Events, Status, RESTEvents } from 'discord.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { handleInteraction } from './interactions/router.js';
@@ -16,6 +16,66 @@ import * as dashboardCommand from './commands/dashboard.js';
 import { handleMessageCreate } from './events/messageCreate.handler.js';
 
 let discordClient = null;
+let activeRateLimit = null;
+let botLifecycleState = 'idle'; // 'idle' | 'ready' | 'rate_limited' | 'reconnecting' | 'standby' | 'failed'
+let reconnectTimer = null;
+let isReconnecting = false;
+let isLoginInFlight = false;
+
+export const DiscordAuthFailureReason = {
+  INVALID_TOKEN: 'INVALID_TOKEN',
+  DISALLOWED_INTENTS: 'DISALLOWED_INTENTS',
+  RATE_LIMITED: 'RATE_LIMITED',
+  TRANSIENT_GATEWAY_ERROR: 'TRANSIENT_GATEWAY_ERROR'
+};
+
+/**
+ * Classify Discord authentication failures to differentiate unrecoverable
+ * credential errors from transient 429 rate limits and network drops.
+ *
+ * @param {Error|object} err
+ * @param {Client} [client]
+ * @returns {string} One of DiscordAuthFailureReason
+ */
+export function classifyDiscordError(err, client) {
+  const msg = err?.message?.toLowerCase() || '';
+  const code = err?.code;
+  const status = err?.status;
+
+  // 1. Invalid token (Fatal, permanent)
+  if (
+    code === 'TokenInvalid' ||
+    status === 401 ||
+    (msg.includes('token') && msg.includes('invalid')) ||
+    msg.includes('an invalid token was provided')
+  ) {
+    return DiscordAuthFailureReason.INVALID_TOKEN;
+  }
+
+  // 2. Disallowed intents (Fatal configuration error)
+  if (code === 4014 || msg.includes('disallowed intent')) {
+    return DiscordAuthFailureReason.DISALLOWED_INTENTS;
+  }
+
+  // 3. HTTP 429 / Rate Limited
+  if (
+    status === 429 ||
+    status === '429' ||
+    code === 429 ||
+    code === '429' ||
+    code === 'RATE_LIMITED' ||
+    code === 'RateLimitError' ||
+    msg.includes('429') ||
+    msg.includes('rate limit') ||
+    msg.includes('you are being rate limited') ||
+    (activeRateLimit && activeRateLimit.resetAt > Date.now())
+  ) {
+    return DiscordAuthFailureReason.RATE_LIMITED;
+  }
+
+  // 4. Transient network / gateway socket errors
+  return DiscordAuthFailureReason.TRANSIENT_GATEWAY_ERROR;
+}
 
 /**
  * Initialize Discord Client and register commands & events
@@ -53,8 +113,36 @@ export function createDiscordClient() {
     }
   }
 
+  // Track REST rate limits and extract exact Discord Retry-After values
+  client.rest.on(RESTEvents.RateLimited, (rateLimitData) => {
+    botLifecycleState = 'rate_limited';
+    activeRateLimit = {
+      retryAfter: rateLimitData.retryAfter,
+      global: rateLimitData.global,
+      scope: rateLimitData.scope,
+      url: rateLimitData.url,
+      resetAt: Date.now() + rateLimitData.retryAfter
+    };
+    logger.warn(
+      {
+        retryAfterMs: rateLimitData.retryAfter,
+        global: rateLimitData.global,
+        scope: rateLimitData.scope,
+        url: rateLimitData.url
+      },
+      `Discord REST rate limit encountered (HTTP 429). Retry-After: ${rateLimitData.retryAfter}ms`
+    );
+  });
+
   // Ready event
   client.once(Events.ClientReady, (c) => {
+    botLifecycleState = 'ready';
+    activeRateLimit = null;
+    isReconnecting = false;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     logger.info(`Discord Bot successfully authenticated as ${c.user.tag}`);
   });
 
@@ -111,7 +199,9 @@ export function createDiscordClient() {
 }
 
 /**
- * Perform a raw, unauthenticated HTTPS reachability check to Discord's public gateway API
+ * Perform a raw, unauthenticated HTTPS reachability check to Discord's public gateway API.
+ * Preserved for on-demand diagnostics only; omitted from automatic startup to conserve quota.
+ *
  * @param {number} [timeoutMs=5000]
  * @returns {Promise<{ reachable: boolean, status?: number, latencyMs?: number, gatewayUrl?: string, err?: string }>}
  */
@@ -170,147 +260,296 @@ export function getDiscordClient() {
 }
 
 /**
- * Start and authenticate the Discord bot
- * @param {number} [timeoutMs=30000] Gateway login timeout in milliseconds
+ * Execute a single login attempt with an in-flight concurrency guard and dynamic timeout.
+ *
+ * @param {number} [timeoutMs=60000]
  * @returns {Promise<boolean>}
  */
+export async function executeLoginAttempt(timeoutMs = 60000) {
+  if (isLoginInFlight) {
+    logger.warn('Discord login attempt already in flight; skipping concurrent invocation.');
+    return false;
+  }
+  isLoginInFlight = true;
+
+  const client = getDiscordClient();
+  let timeoutHandle = null;
+
+  // Adapt timeout: if Discord provided a Retry-After, extend timeout so we don't preempt the cooldown
+  const effectiveTimeout = activeRateLimit && activeRateLimit.resetAt > Date.now()
+    ? Math.max(activeRateLimit.retryAfter + 30000, timeoutMs)
+    : timeoutMs;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(async () => {
+      const seconds = effectiveTimeout / 1000;
+      const err = new Error(
+        `Discord login attempt timed out after ${seconds}s.`
+      );
+      err.code = 'DISCORD_LOGIN_TIMEOUT';
+      reject(err);
+    }, effectiveTimeout);
+  });
+
+  try {
+    logger.info(
+      { effectiveTimeoutMs: effectiveTimeout, wsStatus: client.ws?.status },
+      'Executing Discord Gateway login...'
+    );
+    await Promise.race([client.login(config.discord.token), timeoutPromise]);
+    botLifecycleState = 'ready';
+    activeRateLimit = null;
+    return true;
+  } catch (err) {
+    // If the timeout won the race, tear down connection cleanly to avoid orphan in-flight sockets
+    if (err.code === 'DISCORD_LOGIN_TIMEOUT') {
+      try {
+        await client.destroy();
+      } catch (destroyErr) {
+        logger.debug({ err: destroyErr.message }, 'Notice during cleanup of timed-out client');
+      }
+    }
+    const reason = classifyDiscordError(err, client);
+    err.reason = reason;
+    throw err;
+  } finally {
+    isLoginInFlight = false;
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 /**
- * REPLACEMENT for the existing startDiscordBot function in src/bot/client.js.
+ * Launch an asynchronous background reconnect loop with exponential backoff and Retry-After priority.
  *
- * Same diagnostics, same logging, same 30s-per-attempt timeout you already
- * have. The only change: on a transient failure (timeout, network error,
- * rate limit) it retries in-process with exponential backoff instead of
- * throwing immediately and letting Render's crash-restart hammer Discord
- * again every 40-70 seconds.
- *
- * On a permanent misconfiguration (bad token) or after MAX_ATTEMPTS
- * transient failures, it still throws — so whatever code currently calls
- * startDiscordBot() and does process.exit(1) on failure keeps working
- * exactly as before, just after backoff has been exhausted instead of on
- * the very first failure.
+ * @param {number} [initialBackoffMs=5000]
+ * @param {number} [maxBackoffMs=300000]
+ * @param {number} [maxAttempts=Infinity]
+ * @returns {void}
  */
-export async function startDiscordBot(timeoutMs = 30000) {
+export function launchBackgroundReconnect(initialBackoffMs = 5000, maxBackoffMs = 300000, maxAttempts = Infinity) {
+  if (isReconnecting || botLifecycleState === 'ready') {
+    return;
+  }
+  isReconnecting = true;
+  let attempt = 0;
+
+  const scheduleNext = () => {
+    if (!isReconnecting || botLifecycleState === 'ready') {
+      isReconnecting = false;
+      return;
+    }
+
+    attempt++;
+    if (attempt > maxAttempts) {
+      botLifecycleState = 'failed';
+      isReconnecting = false;
+      logger.error({ attempts: attempt }, 'Background Discord reconnection reached max attempts limit. Halting retry loop.');
+      return;
+    }
+
+    // Exponential backoff: initialBackoff * 2^(attempt - 1) + jitter
+    const expWait = Math.min(initialBackoffMs * Math.pow(2, attempt - 1), maxBackoffMs);
+    const jitter = Math.floor(Math.random() * 1000);
+    let waitMs = expWait + jitter;
+
+    // Respect active Discord 429 Retry-After if larger than calculated exponential backoff
+    if (activeRateLimit && activeRateLimit.resetAt > Date.now()) {
+      botLifecycleState = 'rate_limited';
+      const remainingCooldown = activeRateLimit.resetAt - Date.now();
+      waitMs = Math.max(waitMs, remainingCooldown + 1000);
+    } else {
+      botLifecycleState = 'reconnecting';
+    }
+
+    logger.info(
+      {
+        attempt,
+        waitMs,
+        botLifecycleState,
+        rateLimited: Boolean(activeRateLimit)
+      },
+      `Scheduling Discord background reconnect attempt #${attempt} in ${(waitMs / 1000).toFixed(1)}s...`
+    );
+
+    reconnectTimer = setTimeout(async () => {
+      if (!isReconnecting || botLifecycleState === 'ready') {
+        return;
+      }
+
+      // Concurrency guard: if another attempt is still in flight, reschedule
+      if (isLoginInFlight) {
+        logger.info('A login attempt is currently in flight; rescheduling background retry.');
+        scheduleNext();
+        return;
+      }
+
+      try {
+        botLifecycleState = 'reconnecting';
+        logger.info({ attempt }, 'Executing background Discord gateway login attempt...');
+        await executeLoginAttempt(60000);
+
+        botLifecycleState = 'ready';
+        activeRateLimit = null;
+        isReconnecting = false;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        logger.info({ attempt }, 'Discord bot successfully reconnected in background.');
+      } catch (err) {
+        const reason = err.reason || classifyDiscordError(err, getDiscordClient());
+        err.reason = reason;
+
+        // Fatal non-recoverable errors: abort permanently to stop wasting network quota
+        if (
+          reason === DiscordAuthFailureReason.INVALID_TOKEN ||
+          reason === DiscordAuthFailureReason.DISALLOWED_INTENTS
+        ) {
+          botLifecycleState = 'failed';
+          isReconnecting = false;
+          logger.fatal(
+            { err: err.message, reason },
+            'Fatal Discord configuration error detected in background reconnect. Aborting retry loop.'
+          );
+          return;
+        }
+
+        if (reason === DiscordAuthFailureReason.RATE_LIMITED) {
+          botLifecycleState = 'rate_limited';
+          logger.warn(
+            { err: err.message, retryAfterMs: activeRateLimit?.retryAfter },
+            'Background Discord reconnect was rate-limited (HTTP 429). Retrying after cooldown.'
+          );
+        } else {
+          botLifecycleState = 'reconnecting';
+          logger.warn(
+            { err: err.message, reason },
+            'Background Discord reconnect encountered transient error. Scheduling backoff retry.'
+          );
+        }
+
+        scheduleNext();
+      }
+    }, waitMs);
+  };
+
+  scheduleNext();
+}
+
+/**
+ * Start and authenticate the Discord bot.
+ * Differentiates fatal credentials from 429 rate limits, launching background backoff if rate-limited.
+ *
+ * @param {object|number} [optionsOrTimeout={}]
+ * @returns {Promise<boolean>}
+ */
+export async function startDiscordBot(optionsOrTimeout = {}) {
+  const options = typeof optionsOrTimeout === 'number'
+    ? { maxInitialWaitMs: optionsOrTimeout, enableBackgroundRetry: false, throwOnFailure: false }
+    : optionsOrTimeout;
+
+  const {
+    maxInitialWaitMs = 30000,
+    initialBackoffMs = 5000,
+    maxBackoffMs = 300000,
+    enableBackgroundRetry = true,
+    throwOnFailure = false
+  } = options;
+
   const client = getDiscordClient();
 
   if (!config.discord.token) {
     if (config.isDevelopment || config.isTest) {
+      botLifecycleState = 'standby';
       logger.warn('DISCORD_TOKEN is not provided. Discord bot is in offline/standby mode for local/test development.');
       return false;
     }
     throw new Error('DISCORD_TOKEN is required in production.');
   }
 
-  const MAX_ATTEMPTS = 8;
-  const BASE_DELAY_MS = 2_000;      // first retry delay
-  const MAX_DELAY_MS = 5 * 60_000;  // cap at 5 minutes between attempts
+  // Pre-login low-level state diagnostics (token length only, never the value)
+  const rawToken = config.discord.token ?? '';
+  const tokenLength = typeof rawToken === 'string' ? rawToken.trim().length : 0;
+  const tokenPresent = tokenLength > 0;
+  const wsStatus = client.ws?.status;
+  const wsStatusName = Status[wsStatus] ?? 'Unknown';
 
-  function isPermanentError(error) {
-    const msg = String(error?.message || error);
-    return (
-      error?.code === 'TokenInvalid' ||
-      msg.includes('An invalid token was provided') ||
-      msg.includes('DISALLOWED_INTENTS') ||
-      msg.includes('disallowed intents')
-    );
-  }
+  logger.info(
+    {
+      tokenPresent,
+      tokenLength,
+      wsStatus,
+      wsStatusName,
+      maxInitialWaitMs
+    },
+    `Initiating Discord Bot login (tokenLength: ${tokenLength}, wsStatus: ${wsStatus}/${wsStatusName})`
+  );
 
-  function backoffDelay(attempt) {
-    const exp = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
-    const jitter = Math.random() * exp * 0.3; // up to 30% jitter
-    return Math.round(exp + jitter);
-  }
+  try {
+    await executeLoginAttempt(maxInitialWaitMs);
+    botLifecycleState = 'ready';
+    return true;
+  } catch (initialError) {
+    const reason = initialError.reason;
+    logger.warn({ reason, err: initialError.message }, 'Initial Discord gateway login attempt did not succeed');
 
-  function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    // 1. Raw network reachability check against public Discord API
-    await checkDiscordApiReachability(5000);
-
-    // 2. Pre-login low-level state diagnostics
-    const wsStatus = client.ws?.status;
-    const wsStatusName = Status[wsStatus] ?? 'Unknown';
-    const shardCount = client.ws?.shards?.size ?? 0;
-    const restHandlersCount = client.rest?.handlers?.size ?? 0;
-    const globalRemaining = client.rest?.globalRemaining ?? null;
-    const globalReset = client.rest?.globalReset ?? null;
-    const rawToken = config.discord.token ?? '';
-    const tokenLength = typeof rawToken === 'string' ? rawToken.trim().length : 0;
-    const tokenPresent = tokenLength > 0;
-
-    logger.info(
-      {
-        attempt,
-        maxAttempts: MAX_ATTEMPTS,
-        tokenPresent,
-        tokenLength,
-        wsStatus,
-        wsStatusName,
-        shardCount,
-        restHandlersCount,
-        globalRemaining,
-        globalReset,
-        timeoutMs
-      },
-      `Pre-login Discord client diagnostics (attempt ${attempt}/${MAX_ATTEMPTS}, tokenLength: ${tokenLength}, wsStatus: ${wsStatus}/${wsStatusName}, shards: ${shardCount})`
-    );
-
-    let timeoutHandle = null;
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        const currentWsStatus = client.ws?.status;
-        const currentStatusName = Status[currentWsStatus] ?? 'Unknown';
-        const timeoutError = new Error(
-          `Discord Gateway authentication timed out after ${timeoutMs / 1000}s. ` +
-          `Client WS status: ${currentWsStatus} (${currentStatusName}). ` +
-          `Verify DISCORD_TOKEN and ensure required Privileged Gateway Intents (Message Content) are enabled in the Discord Developer Portal.`
-        );
-        timeoutError.code = 'DISCORD_LOGIN_TIMEOUT';
-        reject(timeoutError);
-      }, timeoutMs);
-    });
-
-    try {
-      logger.info({ timeoutMs, attempt }, 'Authenticating with Discord Gateway...');
-      await Promise.race([client.login(config.discord.token), timeoutPromise]);
-      return true;
-    } catch (error) {
-      const finalWsStatus = client.ws?.status;
-      const finalStatusName = Status[finalWsStatus] ?? 'Unknown';
-      logger.fatal(
-        {
-          err: error.message,
-          code: error.code,
-          wsStatus: finalWsStatus,
-          wsStatusName: finalStatusName,
-          attempt
-        },
-        'Failed to authenticate with Discord Gateway'
-      );
-
-      if (isPermanentError(error) || attempt === MAX_ATTEMPTS) {
-        throw error;
+    // Fatal permanent errors: throw immediately so caller can terminate if appropriate
+    if (
+      reason === DiscordAuthFailureReason.INVALID_TOKEN ||
+      reason === DiscordAuthFailureReason.DISALLOWED_INTENTS ||
+      throwOnFailure
+    ) {
+      if (
+        reason === DiscordAuthFailureReason.INVALID_TOKEN ||
+        reason === DiscordAuthFailureReason.DISALLOWED_INTENTS
+      ) {
+        botLifecycleState = 'failed';
       }
-
-      const delay = backoffDelay(attempt);
-      logger.warn(
-        { delayMs: delay, nextAttempt: attempt + 1, maxAttempts: MAX_ATTEMPTS },
-        `Retrying Discord login in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${MAX_ATTEMPTS})`
-      );
-      await sleep(delay);
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
+      throw initialError;
     }
+
+    if (reason === DiscordAuthFailureReason.RATE_LIMITED) {
+      botLifecycleState = 'rate_limited';
+    } else {
+      botLifecycleState = 'reconnecting';
+    }
+
+    // Rate-limited or transient: launch background reconnect loop with backoff and do not crash
+    if (enableBackgroundRetry) {
+      launchBackgroundReconnect(initialBackoffMs, maxBackoffMs);
+    }
+    return false;
   }
 }
 
 /**
- * Gracefully stop Discord client
+ * Get current Discord bot lifecycle and rate limit status
+ * @returns {{ state: string, isLoginInFlight: boolean, isReconnecting: boolean, activeRateLimit: object|null }}
+ */
+export function getDiscordBotStatus() {
+  return {
+    state: botLifecycleState,
+    isLoginInFlight,
+    isReconnecting,
+    activeRateLimit: activeRateLimit ? { ...activeRateLimit } : null
+  };
+}
+
+/**
+ * Gracefully stop Discord client and cancel any active reconnect loops
  */
 export async function stopDiscordBot() {
+  isReconnecting = false;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  botLifecycleState = 'idle';
+  activeRateLimit = null;
+  isLoginInFlight = false;
+
   if (discordClient) {
     try {
       discordClient.destroy();

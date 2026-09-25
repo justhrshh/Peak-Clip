@@ -6,7 +6,17 @@ import { GatewayIntentBits } from 'discord.js';
 import { config } from '../src/config/index.js';
 import { getPrismaClient } from '../src/database/client.js';
 import { QUEUE_NAMES } from '../src/queues/index.js';
-import { createDiscordClient, startDiscordBot, getDiscordClient, stopDiscordBot, checkDiscordApiReachability } from '../src/bot/client.js';
+import {
+  createDiscordClient,
+  startDiscordBot,
+  getDiscordClient,
+  stopDiscordBot,
+  checkDiscordApiReachability,
+  classifyDiscordError,
+  DiscordAuthFailureReason,
+  getDiscordBotStatus,
+  executeLoginAttempt
+} from '../src/bot/client.js';
 import { AppError, DatabaseError, ProviderError } from '../src/utils/errors.js';
 import { startHealthServer, stopHealthServer, resolveHealthPort, getHealthServer } from '../src/server/health.js';
 import { bootstrap, shutdown } from '../src/app.js';
@@ -189,7 +199,7 @@ test('startDiscordBot enforces explicit timeout if gateway login hangs', async (
   try {
     await assert.rejects(
       async () => {
-        await startDiscordBot(150); // 150ms timeout
+        await startDiscordBot({ maxInitialWaitMs: 150, throwOnFailure: true });
       },
       (err) => {
         assert.equal(err.code, 'DISCORD_LOGIN_TIMEOUT');
@@ -201,6 +211,72 @@ test('startDiscordBot enforces explicit timeout if gateway login hangs', async (
     client.login = origLogin;
     config.discord.token = origToken;
     await stopDiscordBot();
+  }
+});
+
+test('classifyDiscordError correctly distinguishes fatal credentials from rate limits and transient errors', () => {
+  // 1. Invalid Token
+  assert.equal(classifyDiscordError({ code: 'TokenInvalid' }), DiscordAuthFailureReason.INVALID_TOKEN);
+  assert.equal(classifyDiscordError({ status: 401 }), DiscordAuthFailureReason.INVALID_TOKEN);
+  assert.equal(classifyDiscordError(new Error('An invalid token was provided.')), DiscordAuthFailureReason.INVALID_TOKEN);
+
+  // 2. Disallowed Intents
+  assert.equal(classifyDiscordError({ code: 4014 }), DiscordAuthFailureReason.DISALLOWED_INTENTS);
+  assert.equal(classifyDiscordError(new Error('Disallowed intent requested')), DiscordAuthFailureReason.DISALLOWED_INTENTS);
+
+  // 3. Rate Limited (HTTP 429)
+  assert.equal(classifyDiscordError({ status: 429 }), DiscordAuthFailureReason.RATE_LIMITED);
+  assert.equal(classifyDiscordError({ code: 429 }), DiscordAuthFailureReason.RATE_LIMITED);
+  assert.equal(classifyDiscordError(new Error('You are being rate limited. Retry-After: 45')), DiscordAuthFailureReason.RATE_LIMITED);
+
+  // 4. Transient Network / Gateway Error
+  assert.equal(classifyDiscordError({ code: 'ECONNRESET' }), DiscordAuthFailureReason.TRANSIENT_GATEWAY_ERROR);
+  assert.equal(classifyDiscordError(new Error('Discord Gateway connection reset')), DiscordAuthFailureReason.TRANSIENT_GATEWAY_ERROR);
+  assert.equal(classifyDiscordError({ status: 503 }), DiscordAuthFailureReason.TRANSIENT_GATEWAY_ERROR);
+});
+
+test('startDiscordBot catches transient/rate-limit errors without throwing and enters background retry', async () => {
+  const client = getDiscordClient();
+  const origLogin = client.login;
+  const origToken = config.discord.token;
+
+  config.discord.token = 'mock_token_for_resilience_test';
+  // Simulate an HTTP 429 rate limit error
+  client.login = async () => {
+    const err = new Error('You are being rate limited.');
+    err.status = 429;
+    throw err;
+  };
+
+  try {
+    const success = await startDiscordBot({
+      maxInitialWaitMs: 500,
+      enableBackgroundRetry: false,
+      throwOnFailure: false
+    });
+    assert.equal(success, false, 'startDiscordBot should return false instead of throwing on 429');
+
+    const status = getDiscordBotStatus();
+    assert.equal(status.state, 'rate_limited');
+  } finally {
+    client.login = origLogin;
+    config.discord.token = origToken;
+    await stopDiscordBot();
+  }
+});
+
+test('HTTP health check includes discord bot status in /health response payload', async () => {
+  const server = await startHealthServer(0);
+  const address = server.address();
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${address.port}/health`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.services);
+    assert.ok(typeof body.services.discord === 'string');
+  } finally {
+    await stopHealthServer();
   }
 });
 

@@ -3,17 +3,19 @@ import { prisma } from '../database/client.js';
 import { testRedisConnection } from '../queues/redis.js';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { getDiscordBotStatus } from '../bot/client.js';
 
 let serverInstance = null;
 
 /**
- * Perform a fast, non-blocking check on Database and Redis
- * @returns {Promise<{ db: string, redis: string, healthy: boolean }>}
+ * Perform a fast, non-blocking check on Database, Redis, and Discord Bot
+ * @returns {Promise<{ db: string, redis: string, discord: string, healthy: boolean }>}
  */
 async function performConnectivityChecks() {
   const result = {
     db: 'unknown',
     redis: 'unknown',
+    discord: 'unknown',
     healthy: true
   };
 
@@ -36,6 +38,17 @@ async function performConnectivityChecks() {
     result.redis = isRedisConnected ? 'connected' : 'offline';
   } catch (err) {
     result.redis = `error: ${err.message}`;
+  }
+
+  // 3. Discord bot state check
+  try {
+    const botStatus = getDiscordBotStatus();
+    result.discord = botStatus.state;
+    if (botStatus.state === 'rate_limited') {
+      result.healthy = false;
+    }
+  } catch (err) {
+    result.discord = `error: ${err.message}`;
   }
 
   return result;
@@ -123,7 +136,8 @@ export function startHealthServer(port) {
           environment: config.env,
           services: {
             database: checks.db,
-            redis: checks.redis
+            redis: checks.redis,
+            discord: checks.discord
           }
         };
 

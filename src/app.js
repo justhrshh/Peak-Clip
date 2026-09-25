@@ -5,7 +5,7 @@ import { testDatabaseConnection, disconnectDatabase } from './database/client.js
 import { testRedisConnection } from './queues/redis.js';
 import { closeAllQueues } from './queues/index.js';
 import { startWorkers, stopWorkers } from './workers/index.js';
-import { startDiscordBot, stopDiscordBot } from './bot/client.js';
+import { startDiscordBot, stopDiscordBot, DiscordAuthFailureReason } from './bot/client.js';
 import { startHealthServer, stopHealthServer } from './server/health.js';
 
 let isShuttingDown = false;
@@ -49,18 +49,32 @@ export async function bootstrap() {
 
   // 5. Start Discord Bot
   try {
-    await startDiscordBot();
+    const connected = await startDiscordBot();
+    if (connected) {
+      logger.info('Platform foundation initialized successfully.');
+    } else {
+      logger.warn('Platform foundation initialized in deferred Discord mode. Discord connection retrying in background.');
+    }
   } catch (error) {
-    logger.fatal(
-      { err: formatError(error) },
-      'Fatal: Discord bot failed to authenticate with gateway. Aborting.'
-    );
-    if (config.isProduction) {
-      process.exit(1);
+    // Only fatal, non-recoverable configuration errors exit the container
+    if (
+      error.reason === DiscordAuthFailureReason.INVALID_TOKEN ||
+      error.reason === DiscordAuthFailureReason.DISALLOWED_INTENTS
+    ) {
+      logger.fatal(
+        { err: formatError(error), reason: error.reason },
+        'Fatal Discord configuration error. Aborting process with nonzero exit code.'
+      );
+      if (config.isProduction) {
+        process.exit(1);
+      }
+    } else {
+      logger.warn(
+        { err: formatError(error), reason: error.reason },
+        'Discord bot initial connection encountered a recoverable error. Background backoff active; keeping web server alive.'
+      );
     }
   }
-
-  logger.info('Platform foundation initialized successfully.');
 }
 
 /**
