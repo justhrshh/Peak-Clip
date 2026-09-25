@@ -20,26 +20,35 @@ export async function bootstrap() {
     nodeVersion: process.version
   }, 'Starting Discord Clipping Agency Platform...');
 
-  // 1. Check Database connection
+  // 1. Start lightweight HTTP health server FIRST (Render 0.0.0.0:$PORT requirement)
+  // Must bind immediately so Render port scan detects open port before any gateway delays
+  try {
+    await startHealthServer();
+  } catch (error) {
+    logger.fatal(
+      { err: formatError(error), port: process.env.PORT },
+      'Fatal: Health check HTTP server failed to bind port. Aborting process with nonzero exit code.'
+    );
+    process.exit(1);
+  }
+
+  // 2. Check Database connection
   const dbConnected = await testDatabaseConnection();
   if (!dbConnected && config.isProduction) {
     throw new Error('Database connection failed in production mode. Aborting.');
   }
 
-  // 2. Check Redis connection
+  // 3. Check Redis connection
   const redisConnected = await testRedisConnection();
   if (redisConnected) {
-    // 3. Start workers if Redis is available
+    // 4. Start workers if Redis is available
     await startWorkers();
   } else {
     logger.warn('Redis is not reachable. Background workers and queues are running in deferred/offline mode.');
   }
 
-  // 4. Start Discord Bot
+  // 5. Start Discord Bot
   await startDiscordBot();
-
-  // 5. Start lightweight HTTP health server (Render 0.0.0.0:$PORT requirement)
-  await startHealthServer();
 
   logger.info('Platform foundation initialized successfully.');
 }
@@ -47,17 +56,21 @@ export async function bootstrap() {
 /**
  * Graceful shutdown sequence
  * @param {string} signal
+ * @param {boolean} [exitProcess=true]
  */
-export async function shutdown(signal) {
+export async function shutdown(signal, exitProcess = true) {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
   logger.info({ signal }, 'Received shutdown signal. Commencing graceful teardown...');
 
-  const shutdownTimeout = setTimeout(() => {
-    logger.fatal('Graceful shutdown timed out. Forcing termination.');
-    process.exit(1);
-  }, 10000);
+  let shutdownTimeout = null;
+  if (exitProcess && !config.isTest) {
+    shutdownTimeout = setTimeout(() => {
+      logger.fatal('Graceful shutdown timed out. Forcing termination.');
+      process.exit(1);
+    }, 10000);
+  }
 
   try {
     // Teardown HTTP Health Server
@@ -75,13 +88,20 @@ export async function shutdown(signal) {
     // Teardown Database
     await disconnectDatabase();
 
-    clearTimeout(shutdownTimeout);
+    if (shutdownTimeout) clearTimeout(shutdownTimeout);
     logger.info('Graceful teardown completed. Exiting process.');
-    process.exit(0);
+    if (exitProcess && !config.isTest) {
+      process.exit(0);
+    }
   } catch (error) {
-    clearTimeout(shutdownTimeout);
+    if (shutdownTimeout) clearTimeout(shutdownTimeout);
     logger.error({ err: formatError(error) }, 'Error during graceful shutdown');
-    process.exit(1);
+    if (exitProcess && !config.isTest) {
+      process.exit(1);
+    }
+    throw error;
+  } finally {
+    isShuttingDown = false;
   }
 }
 

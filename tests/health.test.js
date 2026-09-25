@@ -1,3 +1,5 @@
+import net from 'node:net';
+import http from 'node:http';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../src/config/index.js';
@@ -5,7 +7,8 @@ import { getPrismaClient } from '../src/database/client.js';
 import { QUEUE_NAMES } from '../src/queues/index.js';
 import { createDiscordClient } from '../src/bot/client.js';
 import { AppError, DatabaseError, ProviderError } from '../src/utils/errors.js';
-import { startHealthServer, stopHealthServer, resolveHealthPort } from '../src/server/health.js';
+import { startHealthServer, stopHealthServer, resolveHealthPort, getHealthServer } from '../src/server/health.js';
+import { bootstrap, shutdown } from '../src/app.js';
 
 test('Configuration loads with expected defaults', () => {
   assert.ok(config);
@@ -98,4 +101,72 @@ test('Discord client factory instantiates client and registers ping command', ()
   assert.ok(client);
   assert.ok(client.commands.has('ping'));
 });
+
+test('full app.js boot sequence opens a live TCP listener on resolved port', async () => {
+  const originalPort = process.env.PORT;
+  // Use port 0 so the OS assigns an ephemeral free port without collision
+  process.env.PORT = '0';
+
+  try {
+    await bootstrap();
+
+    const server = getHealthServer();
+    assert.ok(server, 'Health server instance must exist after bootstrap');
+    assert.equal(server.listening, true, 'Health server must be actively listening');
+
+    const address = server.address();
+    assert.ok(address && typeof address === 'object', 'Server address must be an object');
+    const actualPort = address.port;
+    assert.ok(actualPort > 0, `Expected actual bound port to be > 0, got ${actualPort}`);
+
+    // Assert live TCP listener via net.createConnection
+    const connected = await new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host: '127.0.0.1', port: actualPort }, () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.on('error', (err) => {
+        reject(err);
+      });
+    });
+    assert.equal(connected, true, 'TCP socket connection must succeed against listening port');
+
+    // Also assert HTTP GET /health returns 200
+    const res = await fetch(`http://127.0.0.1:${actualPort}/health`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(data.status === 'ok' || data.status === 'degraded');
+  } finally {
+    await shutdown('SIGTERM', false);
+    if (originalPort !== undefined) {
+      process.env.PORT = originalPort;
+    } else {
+      delete process.env.PORT;
+    }
+  }
+});
+
+test('startHealthServer rejects with fatal error when port is already in use', async () => {
+  // Bind a dummy server to an ephemeral port
+  const dummy = http.createServer();
+  await new Promise((resolve) => dummy.listen(0, '0.0.0.0', resolve));
+  const occupiedPort = dummy.address().port;
+
+  try {
+    await assert.rejects(
+      async () => {
+        await startHealthServer(occupiedPort);
+      },
+      (err) => {
+        assert.equal(err.code, 'EADDRINUSE');
+        return true;
+      }
+    );
+  } finally {
+    await new Promise((resolve) => dummy.close(resolve));
+    await stopHealthServer();
+  }
+});
+
+
 

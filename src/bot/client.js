@@ -99,8 +99,8 @@ export async function startDiscordBot() {
   const client = getDiscordClient();
 
   if (!config.discord.token) {
-    if (config.isDevelopment) {
-      logger.warn('DISCORD_TOKEN is not provided. Discord bot is in offline/standby mode for local development.');
+    if (config.isDevelopment || config.isTest) {
+      logger.warn('DISCORD_TOKEN is not provided. Discord bot is in offline/standby mode for local/test development.');
       return false;
     }
     throw new Error('DISCORD_TOKEN is required in production.');
