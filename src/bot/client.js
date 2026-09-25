@@ -14,6 +14,7 @@ import * as setupCommand from './commands/setup.js';
 import * as registerCommand from './commands/register.js';
 import * as dashboardCommand from './commands/dashboard.js';
 import { handleMessageCreate } from './events/messageCreate.handler.js';
+import { runComprehensiveLoginDiagnostics, sanitizeDebugMessage } from './diagnostics.js';
 
 let discordClient = null;
 let activeRateLimit = null;
@@ -187,12 +188,52 @@ export function createDiscordClient() {
   });
 
   client.on(Events.Warn, (info) => {
-    logger.warn({ info }, 'Discord client warning');
+    logger.warn({ info }, '[Discord Warning]');
   });
 
-  // Client internal debug logging (gateway connect, shard transitions, session limits)
+  // Client internal debug logging - promoted to info so it is visible in production logs
   client.on(Events.Debug, (message) => {
-    logger.debug({ gatewayDebug: message }, 'Discord gateway debug notice');
+    logger.info({ gatewayDebug: sanitizeDebugMessage(message) }, '[Discord Gateway Debug]');
+  });
+
+  // REST debug and response tracking
+  client.rest.on(RESTEvents.Response, (request, response) => {
+    logger.info(
+      { method: request.method, route: request.route, status: response.status },
+      `[Discord REST Response] ${request.method} ${request.route} -> HTTP ${response.status}`
+    );
+  });
+
+  client.rest.on(RESTEvents.Debug, (message) => {
+    logger.info({ restDebug: sanitizeDebugMessage(message) }, '[Discord REST Debug]');
+  });
+
+  client.on(Events.ShardReady, (shardId, unavailableGuilds) => {
+    logger.info({ shardId, unavailableGuildsCount: unavailableGuilds?.size ?? 0 }, '[Discord Shard Ready]');
+  });
+
+  client.on(Events.ShardReconnecting, (shardId) => {
+    logger.info({ shardId }, '[Discord Shard Reconnecting]');
+  });
+
+  client.on(Events.ShardResume, (shardId, replayedEvents) => {
+    logger.info({ shardId, replayedEvents }, '[Discord Shard Resumed]');
+  });
+
+  // Raw gateway packet monitoring for protocol opcodes (Hello, Ready, Reconnect, Heartbeat ACK)
+  client.on(Events.Raw, (packet, shardId) => {
+    if (packet && (packet.op === 10 || packet.op === 9 || packet.op === 7 || packet.t === 'READY' || packet.t === 'RESUMED')) {
+      logger.info(
+        {
+          shardId,
+          op: packet.op,
+          opName: packet.op === 10 ? 'HELLO' : packet.op === 9 ? 'INVALID_SESSION' : packet.op === 7 ? 'RECONNECT' : 'DISPATCH',
+          eventType: packet.t,
+          heartbeatInterval: packet.d?.heartbeat_interval
+        },
+        `[Discord Gateway Protocol Event] ${packet.t || `Opcode ${packet.op}`}`
+      );
+    }
   });
 
   return client;
@@ -274,17 +315,87 @@ export async function executeLoginAttempt(timeoutMs = 60000) {
 
   const client = getDiscordClient();
   let timeoutHandle = null;
+  let progressTicker = null;
+  const loginStartTime = Date.now();
+
+  // Run deep pre-login diagnostics (DNS, TLS, REST /gateway/bot, Application metadata)
+  try {
+    await runComprehensiveLoginDiagnostics(config.discord.token, client);
+  } catch (diagErr) {
+    logger.warn({ err: diagErr.message }, '[DIAGNOSTIC] Notice while running pre-login diagnostics');
+  }
 
   // Adapt timeout: if Discord provided a Retry-After, extend timeout so we don't preempt the cooldown
   const effectiveTimeout = activeRateLimit && activeRateLimit.resetAt > Date.now()
     ? Math.max(activeRateLimit.retryAfter + 30000, timeoutMs)
     : timeoutMs;
 
+  // Periodic in-flight diagnostic checkpoints every 10 seconds
+  progressTicker = setInterval(() => {
+    const elapsedSeconds = Math.round((Date.now() - loginStartTime) / 1000);
+    const wsStatus = client.ws?.status;
+    const wsStatusName = Status[wsStatus] ?? 'Unknown';
+    const shards = [];
+    if (client.ws?.shards) {
+      for (const [id, shard] of client.ws.shards) {
+        shards.push({
+          id,
+          status: shard.status,
+          statusName: Status[shard.status] ?? 'Unknown',
+          ping: shard.ping
+        });
+      }
+    }
+    logger.info(
+      {
+        elapsedSeconds,
+        wsStatus,
+        wsStatusName,
+        shardsCount: client.ws?.shards?.size ?? 0,
+        shards,
+        hasWsInternalManager: Boolean(client.ws?._ws),
+        hasGatewayInfo: Boolean(client.ws?._ws?.gatewayInformation)
+      },
+      `[Discord Login Progress Checkpoint] Login in flight for ${elapsedSeconds}s (wsStatus: ${wsStatus}/${wsStatusName}, shards: ${client.ws?.shards?.size ?? 0})`
+    );
+  }, 10000);
+
   const timeoutPromise = new Promise((_, reject) => {
     timeoutHandle = setTimeout(async () => {
       const seconds = effectiveTimeout / 1000;
+      const wsStatus = client.ws?.status;
+      const wsStatusName = Status[wsStatus] ?? 'Unknown';
+      const shards = [];
+      if (client.ws?.shards) {
+        for (const [id, shard] of client.ws.shards) {
+          shards.push({
+            id,
+            status: shard.status,
+            statusName: Status[shard.status] ?? 'Unknown',
+            ping: shard.ping
+          });
+        }
+      }
+
+      const diagnosticAnalysis = {
+        elapsedSeconds: seconds,
+        wsStatus,
+        wsStatusName,
+        shardsCount: client.ws?.shards?.size ?? 0,
+        shards,
+        hasWsInternalManager: Boolean(client.ws?._ws),
+        hasGatewayInfo: Boolean(client.ws?._ws?.gatewayInformation),
+        gatewayUrlReturned: client.ws?._ws?.gatewayInformation?.data?.url ?? null,
+        hangingPhase: (client.ws?.shards?.size ?? 0) === 0
+          ? 'REST_GATEWAY_BOT_FETCH (client.rest.get /gateway/bot did not complete)'
+          : 'WEBSOCKET_HANDSHAKE_OR_HELLO (Shard created, waiting for WebSocket connection or Opcode 10 Hello)'
+      };
+
+      logger.error(diagnosticAnalysis, `[DIAGNOSTIC TIMEOUT ANALYSIS] Login timed out after ${seconds}s.`);
+
       const err = new Error(
-        `Discord login attempt timed out after ${seconds}s.`
+        `Discord login attempt timed out after ${seconds}s. ` +
+        `Phase: ${diagnosticAnalysis.hangingPhase}. Client WS status: ${wsStatus} (${wsStatusName}).`
       );
       err.code = 'DISCORD_LOGIN_TIMEOUT';
       reject(err);
@@ -316,6 +427,9 @@ export async function executeLoginAttempt(timeoutMs = 60000) {
     isLoginInFlight = false;
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
+    }
+    if (progressTicker) {
+      clearInterval(progressTicker);
     }
   }
 }
