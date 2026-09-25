@@ -42,16 +42,54 @@ async function performConnectivityChecks() {
 }
 
 /**
+ * Resolve the port to bind the health check server to.
+ * Priority:
+ * 1. Explicit port argument (if passed and valid)
+ * 2. process.env.PORT (if set and non-empty)
+ * 3. config.port (if set)
+ * 4. Fallback default: 3000 (for local dev)
+ *
+ * @param {number|string} [port]
+ * @returns {number}
+ */
+export function resolveHealthPort(port) {
+  if (port !== undefined && port !== null && port !== '') {
+    const parsed = Number(port);
+    if (!Number.isNaN(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  if (process.env.PORT !== undefined && process.env.PORT !== '') {
+    const parsedEnv = Number(process.env.PORT);
+    if (!Number.isNaN(parsedEnv) && parsedEnv >= 0) {
+      return parsedEnv;
+    }
+  }
+
+  if (config?.port !== undefined && config?.port !== null) {
+    const parsedConfig = Number(config.port);
+    if (!Number.isNaN(parsedConfig) && parsedConfig >= 0) {
+      return parsedConfig;
+    }
+  }
+
+  return 3000;
+}
+
+/**
  * Start the lightweight HTTP health check server for Render/Cloud platforms
  * Binds strictly to 0.0.0.0 on process.env.PORT
  *
  * @param {number} [port]
  * @returns {Promise<http.Server>}
  */
-export function startHealthServer(port = Number(process.env.PORT) || config.port || 3000) {
+export function startHealthServer(port) {
   if (serverInstance) {
     return Promise.resolve(serverInstance);
   }
+
+  const resolvedPort = resolveHealthPort(port);
 
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
@@ -85,17 +123,30 @@ export function startHealthServer(port = Number(process.env.PORT) || config.port
     });
 
     server.on('error', (err) => {
-      logger.error({ err: err.message, port }, 'Health check HTTP server error');
+      logger.error({ err: err.message, port: resolvedPort }, 'Health check HTTP server error');
       reject(err);
     });
 
     // Explicitly bind to 0.0.0.0 for containerized platforms like Render
-    server.listen(port, '0.0.0.0', () => {
+    server.listen(resolvedPort, '0.0.0.0', () => {
       serverInstance = server;
-      logger.info({ port, host: '0.0.0.0' }, `Health check HTTP server listening on 0.0.0.0:${port} [GET /health]`);
+      const addr = server.address();
+      const actualPort = typeof addr === 'object' && addr !== null ? addr.port : resolvedPort;
+      logger.info(
+        { port: actualPort, host: '0.0.0.0', requestedPort: resolvedPort },
+        `Health check HTTP server listening on 0.0.0.0:${actualPort} [GET /health]`
+      );
       resolve(server);
     });
   });
+}
+
+/**
+ * Get current HTTP health check server instance (useful for testing and inspection)
+ * @returns {http.Server|null}
+ */
+export function getHealthServer() {
+  return serverInstance;
 }
 
 /**
@@ -108,6 +159,9 @@ export function stopHealthServer() {
   }
 
   return new Promise((resolve) => {
+    if (typeof serverInstance.closeAllConnections === 'function') {
+      serverInstance.closeAllConnections();
+    }
     serverInstance.close((err) => {
       if (err) {
         logger.warn({ err: err.message }, 'Error closing health check HTTP server');
