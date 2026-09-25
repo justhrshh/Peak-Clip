@@ -174,6 +174,21 @@ export function getDiscordClient() {
  * @param {number} [timeoutMs=30000] Gateway login timeout in milliseconds
  * @returns {Promise<boolean>}
  */
+/**
+ * REPLACEMENT for the existing startDiscordBot function in src/bot/client.js.
+ *
+ * Same diagnostics, same logging, same 30s-per-attempt timeout you already
+ * have. The only change: on a transient failure (timeout, network error,
+ * rate limit) it retries in-process with exponential backoff instead of
+ * throwing immediately and letting Render's crash-restart hammer Discord
+ * again every 40-70 seconds.
+ *
+ * On a permanent misconfiguration (bad token) or after MAX_ATTEMPTS
+ * transient failures, it still throws — so whatever code currently calls
+ * startDiscordBot() and does process.exit(1) on failure keeps working
+ * exactly as before, just after backoff has been exhausted instead of on
+ * the very first failure.
+ */
 export async function startDiscordBot(timeoutMs = 30000) {
   const client = getDiscordClient();
 
@@ -185,70 +200,109 @@ export async function startDiscordBot(timeoutMs = 30000) {
     throw new Error('DISCORD_TOKEN is required in production.');
   }
 
-  // 1. Raw network reachability check against public Discord API
-  await checkDiscordApiReachability(5000);
+  const MAX_ATTEMPTS = 8;
+  const BASE_DELAY_MS = 2_000;      // first retry delay
+  const MAX_DELAY_MS = 5 * 60_000;  // cap at 5 minutes between attempts
 
-  // 2. Pre-login low-level state diagnostics
-  const wsStatus = client.ws?.status;
-  const wsStatusName = Status[wsStatus] ?? 'Unknown';
-  const shardCount = client.ws?.shards?.size ?? 0;
-  const restHandlersCount = client.rest?.handlers?.size ?? 0;
-  const globalRemaining = client.rest?.globalRemaining ?? null;
-  const globalReset = client.rest?.globalReset ?? null;
-  const rawToken = config.discord.token ?? '';
-  const tokenLength = typeof rawToken === 'string' ? rawToken.trim().length : 0;
-  const tokenPresent = tokenLength > 0;
-
-  logger.info(
-    {
-      tokenPresent,
-      tokenLength,
-      wsStatus,
-      wsStatusName,
-      shardCount,
-      restHandlersCount,
-      globalRemaining,
-      globalReset,
-      timeoutMs
-    },
-    `Pre-login Discord client diagnostics (tokenLength: ${tokenLength}, wsStatus: ${wsStatus}/${wsStatusName}, shards: ${shardCount})`
-  );
-
-  let timeoutHandle = null;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      const currentWsStatus = client.ws?.status;
-      const currentStatusName = Status[currentWsStatus] ?? 'Unknown';
-      const timeoutError = new Error(
-        `Discord Gateway authentication timed out after ${timeoutMs / 1000}s. ` +
-        `Client WS status: ${currentWsStatus} (${currentStatusName}). ` +
-        `Verify DISCORD_TOKEN and ensure required Privileged Gateway Intents (Message Content) are enabled in the Discord Developer Portal.`
-      );
-      timeoutError.code = 'DISCORD_LOGIN_TIMEOUT';
-      reject(timeoutError);
-    }, timeoutMs);
-  });
-
-  try {
-    logger.info({ timeoutMs }, 'Authenticating with Discord Gateway...');
-    await Promise.race([client.login(config.discord.token), timeoutPromise]);
-    return true;
-  } catch (error) {
-    const finalWsStatus = client.ws?.status;
-    const finalStatusName = Status[finalWsStatus] ?? 'Unknown';
-    logger.fatal(
-      {
-        err: error.message,
-        code: error.code,
-        wsStatus: finalWsStatus,
-        wsStatusName: finalStatusName
-      },
-      'Failed to authenticate with Discord Gateway'
+  function isPermanentError(error) {
+    const msg = String(error?.message || error);
+    return (
+      error?.code === 'TokenInvalid' ||
+      msg.includes('An invalid token was provided') ||
+      msg.includes('DISALLOWED_INTENTS') ||
+      msg.includes('disallowed intents')
     );
-    throw error;
-  } finally {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
+  }
+
+  function backoffDelay(attempt) {
+    const exp = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
+    const jitter = Math.random() * exp * 0.3; // up to 30% jitter
+    return Math.round(exp + jitter);
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // 1. Raw network reachability check against public Discord API
+    await checkDiscordApiReachability(5000);
+
+    // 2. Pre-login low-level state diagnostics
+    const wsStatus = client.ws?.status;
+    const wsStatusName = Status[wsStatus] ?? 'Unknown';
+    const shardCount = client.ws?.shards?.size ?? 0;
+    const restHandlersCount = client.rest?.handlers?.size ?? 0;
+    const globalRemaining = client.rest?.globalRemaining ?? null;
+    const globalReset = client.rest?.globalReset ?? null;
+    const rawToken = config.discord.token ?? '';
+    const tokenLength = typeof rawToken === 'string' ? rawToken.trim().length : 0;
+    const tokenPresent = tokenLength > 0;
+
+    logger.info(
+      {
+        attempt,
+        maxAttempts: MAX_ATTEMPTS,
+        tokenPresent,
+        tokenLength,
+        wsStatus,
+        wsStatusName,
+        shardCount,
+        restHandlersCount,
+        globalRemaining,
+        globalReset,
+        timeoutMs
+      },
+      `Pre-login Discord client diagnostics (attempt ${attempt}/${MAX_ATTEMPTS}, tokenLength: ${tokenLength}, wsStatus: ${wsStatus}/${wsStatusName}, shards: ${shardCount})`
+    );
+
+    let timeoutHandle = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        const currentWsStatus = client.ws?.status;
+        const currentStatusName = Status[currentWsStatus] ?? 'Unknown';
+        const timeoutError = new Error(
+          `Discord Gateway authentication timed out after ${timeoutMs / 1000}s. ` +
+          `Client WS status: ${currentWsStatus} (${currentStatusName}). ` +
+          `Verify DISCORD_TOKEN and ensure required Privileged Gateway Intents (Message Content) are enabled in the Discord Developer Portal.`
+        );
+        timeoutError.code = 'DISCORD_LOGIN_TIMEOUT';
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+
+    try {
+      logger.info({ timeoutMs, attempt }, 'Authenticating with Discord Gateway...');
+      await Promise.race([client.login(config.discord.token), timeoutPromise]);
+      return true;
+    } catch (error) {
+      const finalWsStatus = client.ws?.status;
+      const finalStatusName = Status[finalWsStatus] ?? 'Unknown';
+      logger.fatal(
+        {
+          err: error.message,
+          code: error.code,
+          wsStatus: finalWsStatus,
+          wsStatusName: finalStatusName,
+          attempt
+        },
+        'Failed to authenticate with Discord Gateway'
+      );
+
+      if (isPermanentError(error) || attempt === MAX_ATTEMPTS) {
+        throw error;
+      }
+
+      const delay = backoffDelay(attempt);
+      logger.warn(
+        { delayMs: delay, nextAttempt: attempt + 1, maxAttempts: MAX_ATTEMPTS },
+        `Retrying Discord login in ${Math.round(delay / 1000)}s (attempt ${attempt + 1}/${MAX_ATTEMPTS})`
+      );
+      await sleep(delay);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 }
